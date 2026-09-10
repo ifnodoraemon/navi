@@ -86,10 +86,10 @@ class WeixinTransportError(RuntimeError):
         self.errcode = errcode
         self.errmsg = " ".join(str(errmsg or "").split())[:300]
         self.reason = _ilink_error_reason(ret=ret, errcode=errcode, errmsg=self.errmsg)
-        super().__init__(
-            f"iLink {operation} rejected ret={ret} errcode={errcode}"
-            + (f" errmsg={self.errmsg}" if self.errmsg else "")
-        )
+        msg_parts = [f"iLink {operation} rejected ret={ret} errcode={errcode}"]
+        if self.errmsg:
+            msg_parts.append(f" errmsg={self.errmsg}")
+        super().__init__("".join(msg_parts))
 
 
 def _resolve_client_id(idempotency_key: str) -> str:
@@ -156,7 +156,9 @@ class WeixinClient:
                 continue
             text = extract_text(raw)
             native_id = raw.get("message_id") or raw.get("id")
-            message_id = str(native_id) if native_id else f"{SYNTHETIC_MESSAGE_ID_PREFIX}{uuid.uuid4().hex}"
+            message_id = f"{SYNTHETIC_MESSAGE_ID_PREFIX}{uuid.uuid4().hex}"
+            if native_id:
+                message_id = str(native_id)
             attachments = await self._attachments_from_raw(raw, message_id=message_id)
             if not text and not attachments:
                 unsupported = _unsupported_item_types(raw)
@@ -197,11 +199,14 @@ class WeixinClient:
     ) -> None:
         chunks = split_text_for_weixin(text)
         for index, chunk in enumerate(chunks):
+            chunk_key = ""
+            if idempotency_key:
+                chunk_key = f"{idempotency_key}:chunk:{index}"
             await self._send_chunk(
                 peer_id=peer_id,
                 text=chunk,
                 context_token=context_token,
-                idempotency_key=(f"{idempotency_key}:chunk:{index}" if idempotency_key else ""),
+                idempotency_key=chunk_key,
             )
             if index < len(chunks) - 1:
                 await self._sleep_between_chunks()
@@ -307,11 +312,9 @@ class WeixinClient:
         text: str = "",
         item_list: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        items = (
-            item_list
-            if item_list is not None
-            else [{"type": ITEM_TEXT, "text_item": {"text": text}}]
-        )
+        items = [{"type": ITEM_TEXT, "text_item": {"text": text}}]
+        if item_list is not None:
+            items = item_list
         message: dict[str, Any] = {
             "from_user_id": "",
             "to_user_id": peer_id,
@@ -703,8 +706,9 @@ def _aes128_ecb_decrypt(ciphertext: bytes, key: bytes) -> bytes:
 def _sanitize_attachment_name(name: str, *, fallback: str) -> str:
     """Make a remote-provided file name safe as a local file name."""
     base = str(name or "").replace("\\", "/").split("/")[-1]
+    char_map = {True: lambda c: c, False: lambda _c: "_"}
     cleaned = "".join(
-        ch if ch.isprintable() and ch not in '<>:"|?*' else "_" for ch in base
+        char_map[ch.isprintable() and ch not in '<>:"|?*'](ch) for ch in base
     ).strip(" .")
     cleaned = cleaned[:150]
     return cleaned or fallback

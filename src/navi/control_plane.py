@@ -22,6 +22,18 @@ __all__ = ["AgentTurnResult", "TurnController"]
 logger = logging.getLogger(__name__)
 
 
+def _as_dict(val: Any) -> dict[str, Any]:
+    if isinstance(val, dict):
+        return dict(val)
+    return {}
+
+
+def _dict_get(val: Any, key: str, default: Any = None) -> Any:
+    if isinstance(val, dict):
+        return val.get(key, default)
+    return default
+
+
 class TurnController(TurnLifecycleMixin):
     """Thin turn facade for the Navi 2.0 control plane.
 
@@ -135,14 +147,8 @@ class TurnController(TurnLifecycleMixin):
         responder_error_reason = ""
         responder_authored = False
         state_graph_facts = invoked_facts.get("state_graph_result")
-        state_graph_evidence = (
-            state_graph_facts.get("evidence") if isinstance(state_graph_facts, dict) else None
-        )
-        retry_gate = (
-            state_graph_evidence.get("retry_gate")
-            if isinstance(state_graph_evidence, dict)
-            else None
-        )
+        state_graph_evidence = _dict_get(state_graph_facts, "evidence")
+        retry_gate = _dict_get(state_graph_evidence, "retry_gate")
         provider_retry_pending = (
             invoked_facts.get("loop_terminal_state") == "paused"
             and isinstance(retry_gate, dict)
@@ -159,26 +165,16 @@ class TurnController(TurnLifecycleMixin):
                 "model_response_present": False,
                 "durable_retry_pending": True,
             }
-        elif not surface_text:
+        if not surface_text and not provider_retry_pending:
             # Capability messages are machine observations, not user copy.
             # Give the responder both the structured result and the raw
             # observation as facts; never surface the observation directly.
             loop_terminal_state = str(invoked_facts.get("loop_terminal_state") or "")
             state_graph_result = invoked_facts.get("state_graph_result")
-            state_graph_evidence = (
-                state_graph_result.get("evidence")
-                if isinstance(state_graph_result, dict)
-                else None
-            )
-            graph_evidence = (
-                dict(state_graph_evidence) if isinstance(state_graph_evidence, dict) else {}
-            )
-            reflection = graph_evidence.get("reflection")
-            reflection = dict(reflection) if isinstance(reflection, dict) else {}
-            capability_result = graph_evidence.get("capability_result")
-            capability_result = (
-                dict(capability_result) if isinstance(capability_result, dict) else {}
-            )
+            state_graph_evidence = _dict_get(state_graph_result, "evidence")
+            graph_evidence = _as_dict(state_graph_evidence)
+            reflection = _as_dict(graph_evidence.get("reflection"))
+            capability_result = _as_dict(graph_evidence.get("capability_result"))
             reason_code = str(
                 reflection.get("reason_code")
                 or graph_evidence.get("reason_code")
@@ -222,10 +218,7 @@ class TurnController(TurnLifecycleMixin):
                 responder_authored = bool(surface_text.strip())
             except Exception as exc:
                 responder_error_reason = f"responder_{type(exc).__name__}"
-                raw_finalization = invoked_facts.get("finalization")
-                finalization_facts = (
-                    dict(raw_finalization) if isinstance(raw_finalization, dict) else {}
-                )
+                finalization_facts = _as_dict(invoked_facts.get("finalization"))
                 invoked_facts["finalization"] = {
                     **finalization_facts,
                     "reason": responder_error_reason,
@@ -247,10 +240,7 @@ class TurnController(TurnLifecycleMixin):
         if invoked.ok and not has_surface_result:
             turn_error_reason = "empty_response"
         if not turn_ok and not surface_text:
-            raw_finalization = invoked_facts.get("finalization")
-            finalization_facts = (
-                dict(raw_finalization) if isinstance(raw_finalization, dict) else {}
-            )
+            finalization_facts = _as_dict(invoked_facts.get("finalization"))
             invoked_facts["finalization"] = {
                 **finalization_facts,
                 "reason": turn_error_reason or "missing_surface_text",
@@ -271,7 +261,7 @@ class TurnController(TurnLifecycleMixin):
                     "error_reason": getattr(invoked, "error_reason", ""),
                 },
             ),
-            model_role="responder" if responder_authored else "planner",
+            model_role={True: "responder", False: "planner"}[bool(responder_authored)],
             terminal=invoked.terminal,
             ok=turn_ok,
             trace_id=trace_id,
@@ -314,6 +304,9 @@ class TurnController(TurnLifecycleMixin):
             sender_id=sender_id,
             input_data={"message": text, "session_alias": session_alias or ""},
         )
+        allowed_tools = None
+        if self.capabilities.allowed_tools is not None:
+            allowed_tools = frozenset(self.capabilities.allowed_tools)
         context = CapabilityContext(
             home=self.home,
             peer_id=peer_id,
@@ -329,11 +322,7 @@ class TurnController(TurnLifecycleMixin):
             trace_id=trace_id,
             input_text=text,
             event_bus=self.event_bus,
-            allowed_tools=(
-                frozenset(self.capabilities.allowed_tools)
-                if self.capabilities.allowed_tools is not None
-                else None
-            ),
+            allowed_tools=allowed_tools,
             disabled_tools=frozenset(self.capabilities.disabled_tools),
             disabled_capability_classes=frozenset(self.capabilities.disabled_capability_classes),
         )

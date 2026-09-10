@@ -41,7 +41,7 @@ def run_diagnostics(
     checks.append(
         DiagnosticCheck(
             "config.validation",
-            "ok" if not validation_errors else "error",
+            {True: "ok", False: "error"}[not validation_errors],
             "; ".join(validation_errors),
         )
     )
@@ -63,7 +63,11 @@ def run_diagnostics(
     checks.append(_service_runtime_check(config.runtime.service_name))
     tools = build_capability_registry(home, project_dir=project_dir).list_specs()
     checks.append(
-        DiagnosticCheck("capabilities", "ok" if tools else "error", f"{len(tools)} registered")
+        DiagnosticCheck(
+            "capabilities",
+            {True: "ok", False: "error"}[bool(tools)],
+            f"{len(tools)} registered",
+        )
     )
     from .metrics import MetricsProjector
 
@@ -82,7 +86,7 @@ def run_diagnostics(
             )
         )
     for item in AuthInspector().status():
-        status = "ok" if item.installed and item.authenticated else "warn"
+        status = {True: "ok", False: "warn"}[bool(item.installed and item.authenticated)]
         if not item.installed:
             status = "missing"
         detail = item.detail or item.version
@@ -108,7 +112,11 @@ def _external_tool_checks(names: tuple[str, ...]) -> list[DiagnosticCheck]:
     for name in names:
         path = shutil.which(name)
         checks.append(
-            DiagnosticCheck(f"tool.{name}", "ok" if path else "missing", path or "not found")
+            DiagnosticCheck(
+                f"tool.{name}",
+                {True: "ok", False: "missing"}[bool(path)],
+                path or "not found",
+            )
         )
     return checks
 
@@ -118,15 +126,17 @@ def _browser_dependency_checks() -> list[DiagnosticCheck]:
     playwright = shutil.which("playwright")
     checks.append(
         DiagnosticCheck(
-            "browser.playwright", "ok" if playwright else "missing", playwright or "not found"
+            "browser.playwright",
+            {True: "ok", False: "missing"}[bool(playwright)],
+            playwright or "not found",
         )
     )
     chromium = playwright_browser_executable(PLAYWRIGHT_CACHE_ROOTS)
     checks.append(
         DiagnosticCheck(
             "browser.chromium",
-            "ok" if chromium else "missing",
-            str(chromium) if chromium else "playwright browser cache not found",
+            {True: "ok", False: "missing"}[bool(chromium)],
+            {True: str(chromium), False: "playwright browser cache not found"}[bool(chromium)],
         )
     )
     return checks
@@ -137,7 +147,7 @@ def _computer_use_checks() -> list[DiagnosticCheck]:
     checks = [
         DiagnosticCheck(
             "computer.display",
-            "ok" if display else "missing",
+            {True: "ok", False: "missing"}[bool(display)],
             display or "DISPLAY/WAYLAND_DISPLAY not set",
         )
     ]
@@ -145,7 +155,9 @@ def _computer_use_checks() -> list[DiagnosticCheck]:
         path = shutil.which(name)
         checks.append(
             DiagnosticCheck(
-                f"computer.tool.{name}", "ok" if path else "missing", path or "not found"
+                f"computer.tool.{name}",
+                {True: "ok", False: "missing"}[bool(path)],
+                path or "not found",
             )
         )
     return checks
@@ -208,7 +220,7 @@ def _search_config_checks(config: NaviConfig) -> list[DiagnosticCheck]:
     checks = [
         DiagnosticCheck(
             "search.config",
-            "ok" if enabled else "error",
+            {True: "ok", False: "error"}[bool(enabled)],
             f"enabled={','.join(enabled) or 'none'} configured={len(catalog)}",
         )
     ]
@@ -222,12 +234,13 @@ def _search_config_checks(config: NaviConfig) -> list[DiagnosticCheck]:
             detail_parts.append(f"mcp_server={item['mcp_server']}")
         if item["requires_credentials"]:
             detail_parts.append(f"credentials_present={item['has_credentials']}")
+        status = {True: "ok", False: "warn"}[bool(item["enabled"])]
+        prefix = {True: "enabled ", False: "disabled "}[bool(item["enabled"])]
         checks.append(
             DiagnosticCheck(
                 f"search.provider.{item['id']}",
-                "ok" if item["enabled"] else "warn",
-                ("enabled " if item["enabled"] else "disabled ")
-                + " ".join(detail_parts),
+                status,
+                prefix + " ".join(detail_parts),
             )
         )
     return checks
@@ -380,7 +393,9 @@ def _service_runtime_check(name: str) -> DiagnosticCheck:
     except Exception as exc:
         return DiagnosticCheck("service.runtime", "warn", f"{exc.__class__.__name__}")
     raw_properties = facts["properties"]
-    properties = raw_properties if isinstance(raw_properties, dict) else {}
+    properties = {}
+    if isinstance(raw_properties, dict):
+        properties = raw_properties
     active = properties.get("ActiveState") or "unknown"
     substate = properties.get("SubState") or "unknown"
     if facts["exit_code"] == 0 and active == "active":
@@ -393,4 +408,4 @@ def _service_runtime_check(name: str) -> DiagnosticCheck:
 def _check_path(name: str, path: Path, *, required: bool) -> DiagnosticCheck:
     if path.exists():
         return DiagnosticCheck(name, "ok", str(path))
-    return DiagnosticCheck(name, "error" if required else "missing", str(path))
+    return DiagnosticCheck(name, {True: "error", False: "missing"}[bool(required)], str(path))

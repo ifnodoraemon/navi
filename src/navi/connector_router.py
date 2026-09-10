@@ -94,6 +94,10 @@ class ConnectorRouter:
             }
             if response_failed and response.facts:
                 output_data["facts"] = response.facts
+            message_map = {
+                True: "Timed out waiting for channel response",
+                False: "Prepared response for channel delivery",
+            }
             trace.add_event(
                 trace_id=correlation_id,
                 phase=TracePhase.RESPONSE_READY,
@@ -102,11 +106,7 @@ class ConnectorRouter:
                 peer_id=message.peer_id,
                 sender_id=message.sender_id,
                 output_data=output_data,
-                message=(
-                    "Timed out waiting for channel response"
-                    if timed_out
-                    else "Prepared response for channel delivery"
-                ),
+                message=message_map[timed_out],
                 ok=not response_failed,
             )
             return response
@@ -281,7 +281,9 @@ def _timeout_response(message: ConnectorMessage) -> ResponseReadyEvent:
 
 
 def _response_ready_failed(response: ResponseReadyEvent) -> bool:
-    facts = response.facts if isinstance(response.facts, dict) else {}
+    facts = {}
+    if isinstance(response.facts, dict):
+        facts = response.facts
     if str(facts.get("entity_type") or "") in {
         "connector_response_wait",
         "runtime_exception",

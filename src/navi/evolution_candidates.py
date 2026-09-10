@@ -47,7 +47,10 @@ class EvolutionCandidateScanner:
         limit: int = 100,
         now: float | None = None,
     ) -> list[EvolutionCandidate]:
-        cutoff = (now if now is not None else time.time()) - max(1, window_days) * 86400
+        current_time = time.time()
+        if now is not None:
+            current_time = now
+        cutoff = current_time - max(1, window_days) * 86400
         candidates: list[EvolutionCandidate] = []
         threshold = max(2, min_occurrences)
         classification_sql = """

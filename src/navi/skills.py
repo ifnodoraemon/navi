@@ -141,7 +141,7 @@ class SkillStore:
             verified=location.verified,
             version=contract.version,
             content_hash=hashlib.sha256(content).hexdigest(),
-            trust_level="verified" if location.verified else "unverified",
+            trust_level={True: "verified", False: "unverified"}[bool(location.verified)],
             scope=location.scope,
             evaluation=contract.evaluation,
         )

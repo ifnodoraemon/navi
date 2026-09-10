@@ -54,11 +54,15 @@ class TraceDeleteCapability(BaseCapability):
         delete_all = args.get("all") is True
         if bool(trace_id) == delete_all:
             raise SchemaMismatch("trace.delete requires exactly one of trace_id or all=true.")
-        deletion = TraceStore(self.home).delete_traces(None if delete_all else trace_id)
-        entity_id = "all" if delete_all else trace_id
+        specs = {
+            True: (None, "all", "trace_collection", "all"),
+            False: (trace_id, trace_id, "trace", "single"),
+        }
+        delete_arg, entity_id, entity_type, scope = specs[delete_all]
+        deletion = TraceStore(self.home).delete_traces(delete_arg)
         facts = {
-            **_transition_facts("trace_collection" if delete_all else "trace", entity_id, "deleted"),
-            "scope": "all" if delete_all else "single",
+            **_transition_facts(entity_type, entity_id, "deleted"),
+            "scope": scope,
             **deletion,
         }
         return _fact_result("trace", facts, run_id=trace_id)

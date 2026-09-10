@@ -38,11 +38,9 @@ class PersonalQueryCapability(BaseCapability):
 
         def _query_by_filter():
             raw_kinds = args.get("kinds")
-            kinds = (
-                tuple(str(item).strip() for item in raw_kinds if str(item).strip())
-                if isinstance(raw_kinds, list)
-                else ()
-            )
+            kinds: tuple[str, ...] = ()
+            if isinstance(raw_kinds, list):
+                kinds = tuple(str(item).strip() for item in raw_kinds if str(item).strip())
             try:
                 return store.query(
                     owner_scopes=owner_scopes,
@@ -87,7 +85,10 @@ class PersonalUpdateCapability(BaseCapability):
         store = PersonalResourceStore(self.home)
         owner_scopes = _owner_scopes(context)
         raw_data = args.get("data")
-        data: dict[str, Any] = dict(raw_data) if isinstance(raw_data, dict) else {}
+        data: dict[str, Any] = {}
+        if isinstance(raw_data, dict):
+            data = dict(raw_data)
+
         def _create_item():
             kind = _arg_text(args, "kind")
             if not kind:
@@ -125,7 +126,7 @@ class PersonalUpdateCapability(BaseCapability):
             mutated = store.update(
                 resource_id,
                 owner_scopes=owner_scopes,
-                patch=data if operation == "update" else {},
+                patch={"update": data}.get(operation, {}),
                 expected_version=expected_version,
                 status=target_status,
             )

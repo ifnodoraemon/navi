@@ -19,11 +19,9 @@ class AccountUsageWindow:
     reset_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        remaining_percent = (
-            None
-            if self.used_percent is None
-            else max(0.0, min(100.0, 100.0 - float(self.used_percent)))
-        )
+        remaining_percent = None
+        if self.used_percent is not None:
+            remaining_percent = max(0.0, min(100.0, 100.0 - float(self.used_percent)))
         return {
             "window_id": self.window_id,
             "used_percent": self.used_percent,
@@ -64,10 +62,13 @@ class AccountUsageSnapshot:
         return not self.unavailable_reason and bool(self.windows or self.credits is not None)
 
     def to_facts(self) -> dict[str, Any]:
+        credit_dict: dict[str, Any] = {}
+        if self.credits is not None:
+            credit_dict = self.credits.to_dict()
         return {
             "entity_type": "account_usage",
             "entity_id": self.provider,
-            "state_transition": "retrieved" if self.available else "unavailable",
+            "state_transition": {True: "retrieved", False: "unavailable"}[self.available],
             "turn_scope": "current",
             "provider": self.provider,
             "source": self.source,
@@ -76,7 +77,7 @@ class AccountUsageSnapshot:
             "plan_type": self.plan_type,
             "auth_status": self.auth_status,
             "windows": [window.to_dict() for window in self.windows],
-            "credits": self.credits.to_dict() if self.credits is not None else {},
+            "credits": credit_dict,
             "unavailable_reason": self.unavailable_reason,
             "evidence_contract": {
                 "scope": "provider_account_usage_snapshot",
@@ -182,7 +183,9 @@ def _fetch_codex_account_usage(*, home: Path, timeout_seconds: float) -> Account
         )
 
     windows: list[AccountUsageWindow] = []
-    rate_limit = payload.get("rate_limit") if isinstance(payload, dict) else {}
+    rate_limit: dict[str, Any] = {}
+    if isinstance(payload, dict):
+        rate_limit = payload.get("rate_limit") or {}
     if isinstance(rate_limit, dict):
         for key in ("primary_window", "secondary_window"):
             window = rate_limit.get(key)
@@ -200,7 +203,9 @@ def _fetch_codex_account_usage(*, home: Path, timeout_seconds: float) -> Account
             )
 
     credit_facts: AccountUsageCredits | None = None
-    credits = payload.get("credits") if isinstance(payload, dict) else {}
+    credits: dict[str, Any] = {}
+    if isinstance(payload, dict):
+        credits = payload.get("credits") or {}
     if isinstance(credits, dict) and any(
         key in credits for key in ("has_credits", "balance", "unlimited")
     ):
@@ -211,15 +216,22 @@ def _fetch_codex_account_usage(*, home: Path, timeout_seconds: float) -> Account
             unlimited=bool(credits.get("unlimited", False)),
         )
 
+    plan_type = ""
+    if isinstance(payload, dict):
+        plan_type = str(payload.get("plan_type") or "")
+    unavailable_reason = "usage_payload_empty"
+    if bool(windows) or credit_facts is not None:
+        unavailable_reason = ""
+
     return AccountUsageSnapshot(
         provider="openai-codex",
         source="openai_codex_usage_api",
         fetched_at=_utc_now_iso(),
-        plan_type=str(payload.get("plan_type") or "") if isinstance(payload, dict) else "",
+        plan_type=plan_type,
         windows=tuple(windows),
         credits=credit_facts,
         auth_status="configured",
-        unavailable_reason="" if windows or credit_facts is not None else "usage_payload_empty",
+        unavailable_reason=unavailable_reason,
     )
 
 
@@ -296,7 +308,9 @@ def _iso_from_any(value: Any) -> str:
     text = str(value).strip()
     if not text:
         return ""
-    return text[:-1] + "+00:00" if text.endswith("Z") else text
+    if text.endswith("Z"):
+        return text[:-1] + "+00:00"
+    return text
 
 
 def _float_or_none(value: Any) -> float | None:

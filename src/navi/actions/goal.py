@@ -6,6 +6,7 @@ from typing import Any
 
 from ..capabilities_types import BaseCapability, CapabilityContext, CapabilityResult, capability
 from ..goal_state_graph import run_goal_loop_state_graph
+from ..json_utils import json_object
 from ..lifecycle import Governance, Phase, Resolution
 from ..loop_control_service import (
     LoopControlService,
@@ -24,6 +25,129 @@ from .helpers import (
     failure_result as _failure_result,
     positive_int as _positive_int,
 )
+
+
+def _safe_str_attr(entity: Any | None, attr: str) -> str:
+    if entity is None:
+        return ""
+    return str(getattr(entity, attr, "") or "")
+
+
+def _optional_arg_text(args: dict[str, Any], key: str) -> str | None:
+    if key not in args:
+        return None
+    return _arg_text(args, key)
+
+
+def _goal_for_id(service: LoopControlService, goal_id: str) -> Any | None:
+    if not goal_id:
+        return None
+    return service.goals.get(goal_id)
+
+
+def _run_for_goal(service: LoopControlService, goal: Any | None) -> Any | None:
+    if goal is None or not goal.run_id:
+        return None
+    return service.runs.get(goal.run_id)
+
+
+def _latest_loop_run_for_goal(service: LoopControlService, goal_id: str) -> Any | None:
+    if not goal_id:
+        return None
+    runs = service.loop_runs.list_by_goal(goal_id, limit=1)
+    if not runs:
+        return None
+    return runs[0]
+
+
+def _first_or_none(items: list[Any]) -> Any | None:
+    if not items:
+        return None
+    return items[0]
+
+
+def _accepted_result_for_goal(service: LoopControlService, goal: Any) -> dict[str, Any]:
+    if not goal.run_id:
+        return {}
+    return service.goals.accepted_result_for_run(goal.run_id)
+
+
+_CANCEL_TARGET_MSG: dict[str, str] = {
+    "cancel": ", loop_run_id, or explicit goal_ids.",
+}
+
+
+def _missing_target_msg(operation: str) -> str:
+    return _CANCEL_TARGET_MSG.get(operation, " or loop_run_id.")
+
+
+def _cancel_goal_ids(operation: str, raw_goal_ids: Any) -> tuple[str, ...]:
+    if operation != "cancel":
+        return ()
+    return _string_tuple(raw_goal_ids)
+
+
+def _occurrence_goals_for_view(
+    view: str,
+    service: LoopControlService,
+    scoped_goals: list[Any],
+    goal_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if view == "occurrences":
+        return [_goal_occurrence_summary(service, goal) for goal in scoped_goals]
+    return [
+        occurrence
+        for goal in goal_rows
+        for occurrence in goal.get("recent_occurrences", [])
+    ]
+
+
+_VIEW_TURN_SCOPE_MAP: dict[str, str] = {
+    "scheduled": "actor",
+    "occurrences": "actor",
+    "history": "actor",
+    "inbox": "actor",
+}
+
+
+def _view_turn_scope(view: str) -> str:
+    return _VIEW_TURN_SCOPE_MAP.get(view, "current")
+
+
+def _history_goals_for_view(view: str, goal_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if view == "history":
+        return goal_rows
+    return []
+
+
+_VIEW_QUERY_SCOPE_MAP: dict[str, str] = {
+    "inbox": "actor_workspace",
+    "current": "actor_workspace",
+    "pending_approval": "actor_workspace",
+    "history": "actor_workspace",
+}
+
+
+def _goal_view_query_scope(view: str) -> str:
+    return _VIEW_QUERY_SCOPE_MAP.get(view, "actor")
+
+
+_BATCH_FAILURE_REASON: dict[bool, str] = {
+    True: "partial_batch_failure",
+    False: "",
+}
+
+
+def _terminal_loop_error(terminal_state: str, failed_states: set[str]) -> str:
+    if terminal_state in failed_states:
+        return f"loop_{terminal_state}"
+    return ""
+
+
+def _allowed_tools_set(tools: Any) -> set[str] | None:
+    if tools is None:
+        return None
+    return set(tools)
 
 
 @capability("goal_open")
@@ -230,11 +354,7 @@ class GoalUpdateCapability(BaseCapability):
                     ),
                     permission_ceiling=permission_ceiling,
                     allowed_capabilities=allowed_capabilities,
-                    verification_command=(
-                        _arg_text(args, "verification_command")
-                        if "verification_command" in args
-                        else None
-                    ),
+                    verification_command=_optional_arg_text(args, "verification_command"),
                     timeout_seconds=_optional_nonnegative_int(
                         args,
                         "timeout_seconds",
@@ -504,21 +624,13 @@ class GoalStateCapability(BaseCapability):
                 loop_run_id=loop_run_id,
                 limit=limit,
             )
-            resolved_goal = state_facts.get("goal")
-            resolved_goal_id = (
-                str(resolved_goal.get("id") or "")
-                if isinstance(resolved_goal, dict)
-                else ""
-            )
-            goal = service.goals.get(resolved_goal_id) if resolved_goal_id else None
-            run = service.runs.get(goal.run_id) if goal and goal.run_id else None
+            resolved_goal = json_object(state_facts.get("goal"))
+            resolved_goal_id = str(resolved_goal.get("id") or "")
+            goal = _goal_for_id(service, resolved_goal_id)
+            run = _run_for_goal(service, goal)
             loop_run_resolvers = {
                 True: lambda: service.loop_runs.get_run(loop_run_id),
-                False: lambda: (
-                    service.loop_runs.list_by_goal(resolved_goal_id, limit=1)[0]
-                    if (resolved_goal_id and service.loop_runs.list_by_goal(resolved_goal_id, limit=1))
-                    else None
-                ),
+                False: lambda: _latest_loop_run_for_goal(service, resolved_goal_id),
             }
             loop_run = loop_run_resolvers[bool(loop_run_id)]()
             return {
@@ -565,7 +677,10 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, str):
-        return (value.strip(),) if value.strip() else ()
+        stripped = value.strip()
+        if not stripped:
+            return ()
+        return (stripped,)
     if isinstance(value, list | tuple):
         return tuple(str(item).strip() for item in value if str(item).strip())
     return ()
@@ -726,7 +841,7 @@ def _require_goal_scope(
         if loop_run is None:
             raise NotFound(f"loop run not found: {loop_run_id}")
         goal = service.goals.get(loop_run.goal_id)
-    elif goal_id:
+    if not loop_run_id and goal_id:
         goal = service.goals.get(goal_id)
     if goal is None:
         raise NotFound("goal not found")
@@ -758,12 +873,11 @@ def _goal_control_preflight(
     service = LoopControlService(home)
     goal_id = _arg_text(args, "goal_id")
     loop_run_id = _arg_text(args, "loop_run_id")
-    goal_ids = _string_tuple(args.get("goal_ids")) if operation == "cancel" else ()
+    goal_ids = _cancel_goal_ids(operation, args.get("goal_ids"))
     try:
         if not goal_id and not loop_run_id and not goal_ids:
             raise SchemaMismatch(
-                f"goal.{operation} requires goal_id"
-                + (", loop_run_id, or explicit goal_ids." if operation == "cancel" else " or loop_run_id.")
+                f"goal.{operation} requires goal_id{_missing_target_msg(operation)}"
             )
         def _check_batch_scopes():
             if goal_id or loop_run_id:
@@ -851,15 +965,7 @@ def _scoped_goal_state(
         for goal in goal_rows
         if goal.get("phase") != Phase.ENDED and not str(goal.get("cron_schedule") or "")
     ]
-    occurrence_goals = (
-        [_goal_occurrence_summary(service, goal) for goal in scoped_goals]
-        if view == "occurrences"
-        else [
-            occurrence
-            for goal in goal_rows
-            for occurrence in goal.get("recent_occurrences", [])
-        ]
-    )
+    occurrence_goals = _occurrence_goals_for_view(view, service, scoped_goals, goal_rows)
     active_loop_runs = []
     for loop_run in service.loop_runs.list_current_for_goals(
         [goal.id for goal in scoped_goals],
@@ -872,11 +978,7 @@ def _scoped_goal_state(
         "entity_type": "goal",
         "entity_id": "",
         "state_transition": "state_read",
-        "turn_scope": (
-            "actor"
-            if view in {"scheduled", "occurrences", "history", "inbox"}
-            else "current"
-        ),
+        "turn_scope": _view_turn_scope(view),
         "query_scope": _goal_view_query_scope(view),
         "view": view,
         "authoritative_for": _goal_view_authority(view),
@@ -887,7 +989,7 @@ def _scoped_goal_state(
         "scheduled_goals": scheduled_goals,
         "occurrence_goals": occurrence_goals,
         "pending_approval_goals": pending_approval_goals,
-        "history_goals": goal_rows if view == "history" else [],
+        "history_goals": _history_goals_for_view(view, goal_rows),
         "active_loop_runs": active_loop_runs,
     }
     return facts
@@ -1028,15 +1130,15 @@ def _goal_matches_context(goal: Any, context: CapabilityContext) -> bool:
 
 
 def _goal_occurrence_summary(service: LoopControlService, goal: Any) -> dict[str, Any]:
-    accepted = service.goals.accepted_result_for_run(goal.run_id) if goal.run_id else {}
+    accepted = _accepted_result_for_goal(service, goal)
     delivery = {
         key: value
         for key, value in accepted.items()
         if key not in {"body", "body_provenance"}
     }
-    run = service.runs.get(goal.run_id) if goal.run_id else None
+    run = _run_for_goal(service, goal)
     loop_runs = service.loop_runs.list_by_goal(goal.id, limit=1)
-    loop_run = loop_runs[0] if loop_runs else None
+    loop_run = _first_or_none(loop_runs)
     return {
         "goal_id": goal.id,
         "parent_goal_id": goal.parent_goal_id,
@@ -1057,30 +1159,26 @@ def _goal_occurrence_summary(service: LoopControlService, goal: Any) -> dict[str
 
 def _run_diagnostics(run: Any | None) -> dict[str, Any]:
     return {
-        "phase": str(run.phase) if run is not None else "",
-        "governance": str(run.governance) if run is not None else "",
-        "acceptance": str(run.acceptance) if run is not None else "",
-        "resolution": str(run.resolution) if run is not None else "",
-        "error": str(run.error) if run is not None else "",
+        "phase": _safe_str_attr(run, "phase"),
+        "governance": _safe_str_attr(run, "governance"),
+        "acceptance": _safe_str_attr(run, "acceptance"),
+        "resolution": _safe_str_attr(run, "resolution"),
+        "error": _safe_str_attr(run, "error"),
     }
 
 
 def _loop_run_diagnostics(loop_run: Any | None) -> dict[str, Any]:
     if loop_run is None:
         return {}
-    evidence = loop_run.evidence if isinstance(loop_run.evidence, dict) else {}
-    raw_args = evidence.get("args")
-    args = dict(raw_args) if isinstance(raw_args, dict) else {}
+    evidence = json_object(loop_run.evidence)
+    args = json_object(evidence.get("args"))
     checker_summaries: list[str] = []
     raw_checker_results = evidence.get("checker_results")
     if isinstance(raw_checker_results, list):
         for item in raw_checker_results[-3:]:
             if not isinstance(item, dict):
                 continue
-            raw_checker_evidence = item.get("evidence")
-            checker_evidence = (
-                raw_checker_evidence if isinstance(raw_checker_evidence, dict) else {}
-            )
+            checker_evidence = json_object(item.get("evidence"))
             summary = str(checker_evidence.get("evidence_summary") or "").strip()
             if summary:
                 checker_summaries.append(summary[:1200])
@@ -1098,11 +1196,7 @@ def _loop_run_diagnostics(loop_run: Any | None) -> dict[str, Any]:
 
 
 def _goal_view_query_scope(view: str) -> str:
-    return (
-        "actor_workspace"
-        if view in {"inbox", "current", "pending_approval", "history"}
-        else "actor"
-    )
+    return _VIEW_QUERY_SCOPE_MAP.get(view, "actor")
 
 
 def _goal_counts(
@@ -1225,7 +1319,7 @@ def _cancel_goal_batch(
         ok=not failed,
         action="goal",
         facts=facts,
-        error_reason="partial_batch_failure" if failed else "",
+        error_reason=_BATCH_FAILURE_REASON[bool(failed)],
     )
 
 
@@ -1289,7 +1383,7 @@ def _goal_result(
         run_id=result.run.id,
         terminal=bool(terminal_state) and not target_is_paused,
         facts=facts,
-        error_reason=f"loop_{terminal_state}" if terminal_state in failed_states else "",
+        error_reason=_terminal_loop_error(terminal_state, failed_states),
         # The returned LoopRun is the governed target of goal.open/resume, not
         # the control turn that invoked this capability. Its durable gate is
         # reported in facts and must never be copied into the control LoopRun.
@@ -1309,7 +1403,7 @@ def _planner_capabilities(
     return CapabilityRegistry(
         home=home,
         project_dir=Path(workspace),
-        allowed_tools=(set(context.allowed_tools) if context.allowed_tools is not None else None),
+        allowed_tools=_allowed_tools_set(context.allowed_tools),
         disabled_tools=set(context.disabled_tools),
         disabled_capability_classes=context.disabled_capability_classes,
         permission_ceiling=context.permission_ceiling,

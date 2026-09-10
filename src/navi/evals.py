@@ -52,7 +52,7 @@ class ClawEvalResult:
 
 def load_daily_journey_eval_dataset(path: Path) -> dict[str, Any]:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    data = {} if loaded is None else loaded
+    data = loaded or {}
     if not isinstance(data, dict):
         raise ValueError("daily journey eval dataset must be a mapping")
     journeys = data.get("journeys")
@@ -80,7 +80,7 @@ def load_daily_journey_eval_dataset(path: Path) -> dict[str, Any]:
 
 def load_claw_eval_dataset(path: Path) -> dict[str, Any]:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    data = {} if loaded is None else loaded
+    data = loaded or {}
     if not isinstance(data, dict):
         raise ValueError("claw eval dataset must be a mapping")
     tasks = data.get("tasks")
@@ -137,7 +137,7 @@ def _validate_eval_steps(steps: list[Any], *, prefix: str) -> None:
 
 def load_connector_journey_eval_dataset(path: Path) -> dict[str, Any]:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    data = {} if loaded is None else loaded
+    data = loaded or {}
     if not isinstance(data, dict):
         raise ValueError("connector journey eval dataset must be a mapping")
     connector = str(data.get("connector") or "").strip()
@@ -197,7 +197,9 @@ async def run_claw_eval_dataset(
     provider: ModelPool | None = None,
 ) -> list[ClawEvalResult]:
     loaded = load_claw_eval_dataset(dataset)
-    run_attempts = attempts if attempts > 0 else int(loaded.get("pass_at") or 3)
+    run_attempts = attempts
+    if run_attempts <= 0:
+        run_attempts = int(loaded.get("pass_at") or 3)
     results: list[ClawEvalResult] = []
     run_root = home / "claw_eval" / _eval_run_id()
     for task in loaded["tasks"]:
@@ -357,13 +359,13 @@ async def _run_daily_journey(
     journey: dict[str, Any],
     provider: ModelPool | None = None,
 ) -> DailyJourneyResult:
-    runtime = (
-        AgentRuntime(home=home, provider=provider) if provider is not None else build_runtime(home)
-    )
+    runtime = build_runtime(home)
+    if provider is not None:
+        runtime = AgentRuntime(home=home, provider=provider)
     ceiling = journey.get("permission_ceiling", "write")
     
     journey_id = str(journey.get("id") or "")
-    source = "public_hermes" if journey_id.startswith("public_") else "cli"
+    source = {True: "public_hermes", False: "cli"}[journey_id.startswith("public_")]
 
     from .event_bus import EventBus
     event_bus = EventBus()
@@ -458,7 +460,7 @@ async def _run_daily_journey(
 def _render_journey_text(text: str, runs: RunStore, *, latest_run_id: str) -> str:
     if "{{approval_code}}" in text:
         approvals = runs.list_approvals(limit=20)
-        code = approvals[0].code if approvals else ""
+        code = getattr(next(iter(approvals), None), "code", "")
         text = text.replace("{{approval_code}}", code)
     if "{{run_id}}" in text:
         text = text.replace("{{run_id}}", latest_run_id)
@@ -534,7 +536,7 @@ def _match_daily_expectation(
             )
     if "scheduled_goal_status" in expect:
         scheduled_goals = goals.list_cron_goals()
-        actual = scheduled_goals[0].task_status if scheduled_goals else ""
+        actual = getattr(next(iter(scheduled_goals), None), "task_status", "")
         if actual != str(expect["scheduled_goal_status"]):
             errors.append(
                 f"{prefix}: scheduled_goal_status expected "
@@ -542,26 +544,26 @@ def _match_daily_expectation(
             )
     if "cron_schedule" in expect:
         scheduled_goals = goals.list_cron_goals()
-        actual = scheduled_goals[0].cron_schedule if scheduled_goals else ""
+        actual = getattr(next(iter(scheduled_goals), None), "cron_schedule", "")
         if actual != str(expect["cron_schedule"]):
             errors.append(
                 f"{prefix}: cron_schedule expected {expect['cron_schedule']!r}, got {actual!r}"
             )
     if "run_phase" in expect:
         run = runs.get(latest_run_id)
-        actual = run.phase if run else ""
+        actual = getattr(run, "phase", "")
         if actual != expect["run_phase"]:
             errors.append(f"{prefix}: run_phase expected {expect['run_phase']!r}, got {actual!r}")
     if "run_resolution" in expect:
         run = runs.get(latest_run_id)
-        actual = run.resolution if run else ""
+        actual = getattr(run, "resolution", "")
         if actual != expect["run_resolution"]:
             errors.append(
                 f"{prefix}: run_resolution expected {expect['run_resolution']!r}, got {actual!r}"
             )
     if "goal_phase" in expect:
         goal = goals.get_by_run(latest_run_id)
-        actual = goal.phase if goal else ""
+        actual = getattr(goal, "phase", "")
         if actual != expect["goal_phase"]:
             errors.append(
                 f"{prefix}: goal_phase expected {expect['goal_phase']!r}, got {actual!r}"
@@ -571,11 +573,14 @@ def _match_daily_expectation(
 
 def _latest_run_id(runs: RunStore) -> str:
     listed = runs.list(limit=1)
-    return listed[0].id if listed else ""
+    return getattr(next(iter(listed), None), "id", "")
 
 
 def _safe_path_name(value: str) -> str:
-    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value.strip())
+    def _ch(c: str) -> str:
+        return {True: c, False: "_"}[c.isalnum() or c in {"-", "_"}]
+
+    safe = "".join(_ch(c) for c in value.strip())
     return safe or "journey"
 
 

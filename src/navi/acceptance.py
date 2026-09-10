@@ -59,6 +59,51 @@ class AcceptanceReport:
 AcceptanceCheckRule = Callable[[dict[str, Any]], dict[str, Any]]
 
 
+def _safe_str_attr(entity: Any | None, attr: str) -> str:
+    if entity is None:
+        return ""
+    return str(getattr(entity, attr, "") or "")
+
+
+def _ensure_list(val: Any) -> list[Any]:
+    if isinstance(val, list):
+        return val
+    return []
+
+
+_VERIFIED_BY_ACCEPTED: dict[bool, str] = {True: "verified", False: "unverified"}
+
+
+def _report_marker(accepted: bool, outcome: str) -> str:
+    if accepted:
+        return "accepted"
+    return outcome
+
+
+def _reconcile_terminal_resolution(terminal: str, run_resolution: str) -> str:
+    if terminal == "converged" and run_resolution == Resolution.SUCCESS:
+        return Resolution.SUCCESS
+    return run_resolution
+
+
+def _text_if_exists(path: Path) -> str:
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+def _error_on_failure(ok: bool, error: str) -> str:
+    if ok:
+        return ""
+    return error
+
+
+def _mismatch_error(ok: bool, message: str) -> str:
+    if ok:
+        return ""
+    return message
+
+
 def load_acceptance_scenario(path: Path) -> AcceptanceScenario:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     data = loaded or {}
@@ -68,8 +113,7 @@ def load_acceptance_scenario(path: Path) -> AcceptanceScenario:
     request = str(data.get("request") or "").strip()
     if not request:
         raise ValueError("acceptance scenario requires request")
-    raw_expected = data.get("expected")
-    expected = raw_expected if isinstance(raw_expected, dict) else {}
+    expected = json_object(data.get("expected"))
     return AcceptanceScenario(
         id=scenario_id,
         request=request,
@@ -190,7 +234,7 @@ async def run_product_acceptance(
 
 
 def report_to_text(report: AcceptanceReport) -> str:
-    marker = "accepted" if report.accepted else report.outcome
+    marker = _report_marker(report.accepted, report.outcome)
     lines = [
         f"product_acceptance={marker}",
         f"scenario={report.id}",
@@ -235,15 +279,15 @@ def _evaluate_acceptance(
         scenario.expected,
         workspace=workspace,
         run=run,
-        goal_phase=goal.phase if goal else "",
-        goal_resolution=goal.resolution if goal else "",
+        goal_phase=_safe_str_attr(goal, "phase"),
+        goal_resolution=_safe_str_attr(goal, "resolution"),
         protocol=protocol,
     )
     all_checks_ok = all(bool(check.get("ok")) for check in checks)
-    run_phase = run.phase if run else ""
-    run_resolution = run.resolution if run else ""
-    goal_phase = goal.phase if goal else ""
-    goal_resolution = goal.resolution if goal else ""
+    run_phase = _safe_str_attr(run, "phase")
+    run_resolution = _safe_str_attr(run, "resolution")
+    goal_phase = _safe_str_attr(goal, "phase")
+    goal_resolution = _safe_str_attr(goal, "resolution")
     protocol_completion = _dict_path(protocol, "completion", "status")
     protocol_verification = _dict_path(protocol, "verification", "status")
     failed_evidence = _failed_evidence(protocol)
@@ -378,9 +422,9 @@ def _state_snapshot(runs: RunStore, run_id: str) -> dict[str, Any]:
     run = runs.get(run_id)
     approvals = runs.list_approvals(run_id=run_id, limit=200)
     return {
-        "run_phase": run.phase if run else "",
-        "run_governance": run.governance if run else "",
-        "run_resolution": run.resolution if run else "",
+        "run_phase": _safe_str_attr(run, "phase"),
+        "run_governance": _safe_str_attr(run, "governance"),
+        "run_resolution": _safe_str_attr(run, "resolution"),
         "approval_statuses": [item.status for item in approvals],
         "log_count": 0,
         "last_log_exit_code": None,
@@ -394,20 +438,15 @@ def _loop_protocol(*, run: Any, goal: Any) -> dict[str, Any]:
     if not isinstance(goal_evidence, dict):
         return {}
     terminal = str(goal_evidence.get("loop_terminal_state") or "")
-    checker = goal_evidence.get("checker_report")
-    checker = checker if isinstance(checker, dict) else {}
+    checker = json_object(goal_evidence.get("checker_report"))
     accepted = bool(checker.get("accepted"))
     return {
         "phase": "state_graph",
         "terminal_state": terminal,
         "completion": {
-            "status": (
-                Resolution.SUCCESS
-                if terminal == "converged" and run.resolution == Resolution.SUCCESS
-                else run.resolution
-            )
+            "status": _reconcile_terminal_resolution(terminal, run.resolution)
         },
-        "verification": {"status": "verified" if accepted else "unverified"},
+        "verification": {"status": _VERIFIED_BY_ACCEPTED[bool(accepted)]},
         "evidence": [
             {
                 "kind": "checker_report",
@@ -437,7 +476,7 @@ def _acceptance_checks(
     file_contains = expected.get("file_contains")
     if isinstance(file_contains, dict):
         checks.append(_file_contains_check(file_contains, workspace=workspace))
-    for item in expected.get("files", []) if isinstance(expected.get("files"), list) else []:
+    for item in _ensure_list(expected.get("files")):
         if isinstance(item, dict):
             checks.append(_file_contains_check(item, workspace=workspace))
     return checks
@@ -445,8 +484,8 @@ def _acceptance_checks(
 
 def _acceptance_run_completed(context: dict[str, Any]) -> dict[str, Any]:
     run = context.get("run")
-    phase = run.phase if run else ""
-    resolution = run.resolution if run else ""
+    phase = _safe_str_attr(run, "phase")
+    resolution = _safe_str_attr(run, "resolution")
     detail = f"phase={phase} resolution={resolution}"
     return _check(
         "run.completed",
@@ -467,22 +506,20 @@ def _acceptance_goal_verified(context: dict[str, Any]) -> dict[str, Any]:
 
 
 def _acceptance_protocol_completed(context: dict[str, Any]) -> dict[str, Any]:
-    raw_protocol = context.get("protocol")
-    protocol = raw_protocol if isinstance(raw_protocol, dict) else {}
+    protocol = json_object(context.get("protocol"))
     status = str(_dict_path(protocol, "completion", "status") or "")
     return _check("protocol.completed", status == Resolution.SUCCESS, status)
 
 
 def _acceptance_protocol_verified(context: dict[str, Any]) -> dict[str, Any]:
-    raw_protocol = context.get("protocol")
-    protocol = raw_protocol if isinstance(raw_protocol, dict) else {}
+    protocol = json_object(context.get("protocol"))
     status = str(_dict_path(protocol, "verification", "status") or "")
     return _check("protocol.verified", status == "verified", status)
 
 
 def _acceptance_run_summary(context: dict[str, Any]) -> dict[str, Any]:
     run = context.get("run")
-    summary = str(run.result_summary if run else "").strip()
+    summary = _safe_str_attr(run, "result_summary").strip()
     return _check("run.summary", bool(summary), "run completed without user-facing result summary")
 
 
@@ -496,7 +533,7 @@ ACCEPTANCE_CHECK_RULES: tuple[AcceptanceCheckRule, ...] = (
 
 
 def _check(name: str, ok: bool, error: str = "") -> dict[str, Any]:
-    return {"name": name, "ok": ok, "error": "" if ok else error}
+    return {"name": name, "ok": ok, "error": _error_on_failure(ok, error)}
 
 
 def _file_contains_check(spec: dict[str, Any], *, workspace: Path) -> dict[str, Any]:
@@ -512,7 +549,7 @@ def _file_contains_check(spec: dict[str, Any], *, workspace: Path) -> dict[str, 
         root = workspace.resolve()
         if resolved != root and root not in resolved.parents:
             return _check("file.contains", False, "expected file is outside workspace")
-        content = resolved.read_text(encoding="utf-8") if resolved.exists() else ""
+        content = _text_if_exists(resolved)
     except OSError as exc:
         return _check("file.contains", False, str(exc))
     ok = bool(expected and expected in content)
@@ -520,13 +557,13 @@ def _file_contains_check(spec: dict[str, Any], *, workspace: Path) -> dict[str, 
         "name": "file.contains",
         "ok": ok,
         "path": str(resolved),
-        "error": "" if ok else "expected text not found",
+        "error": _mismatch_error(ok, "expected text not found"),
     }
 
 
 
 def _failed_evidence(protocol: dict[str, Any]) -> list[dict[str, Any]]:
-    evidence = protocol.get("evidence") if isinstance(protocol, dict) else []
+    evidence = _ensure_list(json_object(protocol).get("evidence"))
     if not isinstance(evidence, list):
         return []
     failed: list[dict[str, Any]] = []
@@ -550,8 +587,7 @@ def _dict_path(data: dict[str, Any], *keys: str) -> Any:
 def _compact_protocol(protocol: dict[str, Any]) -> dict[str, Any]:
     if not protocol:
         return {}
-    raw_evidence = protocol.get("evidence")
-    evidence = raw_evidence if isinstance(raw_evidence, list) else []
+    evidence = _ensure_list(protocol.get("evidence"))
     return {
         "phase": protocol.get("phase"),
         "completion": protocol.get("completion"),

@@ -45,15 +45,13 @@ class WeixinDeliveryTransport:
     async def deliver(self, item: DeliveryItem) -> DeliveryReceipt:
         payload = item.payload
         embedded_token = str(item.transport_context.get("context_token") or "")
-        context_token = (
-            self.sessions.resolve(
+        context_token = embedded_token
+        if self.sessions is not None:
+            context_token = self.sessions.resolve(
                 self.account.account_id,
                 item.peer_id,
                 fallback=embedded_token,
             )
-            if self.sessions is not None
-            else embedded_token
-        )
         if self.send_lock is not None:
             async with self.send_lock:
                 return await self._deliver_locked(item, payload, context_token)
@@ -131,13 +129,11 @@ class WeixinDeliveryTransport:
                 "connector_rate_limited",
                 "connector_transient_rejected",
             }
-            retry_after_seconds = (
-                WEIXIN_RATE_LIMIT_RETRY_SECONDS
-                if exc.reason == "connector_rate_limited"
-                else WEIXIN_TRANSIENT_REJECTION_RETRY_SECONDS
-                if retryable
-                else 0.0
-            )
+            retry_after_map = {
+                "connector_rate_limited": WEIXIN_RATE_LIMIT_RETRY_SECONDS,
+                "connector_transient_rejected": WEIXIN_TRANSIENT_REJECTION_RETRY_SECONDS,
+            }
+            retry_after_seconds = retry_after_map.get(exc.reason, 0.0)
             return DeliveryFailure(
                 reason=exc.reason,
                 error=f"{type(exc).__name__}: {exc}",

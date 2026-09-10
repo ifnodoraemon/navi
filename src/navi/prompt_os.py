@@ -273,9 +273,9 @@ def _planner_tool_manifest_entry(tool: ToolSpec) -> dict[str, Any]:
     of facts it can observe; the executor still validates the complete schema.
     """
     output_properties = tool.output_schema.get("properties")
-    output_fields = (
-        sorted(str(key) for key in output_properties) if isinstance(output_properties, dict) else []
-    )
+    output_fields: list[str] = []
+    if isinstance(output_properties, dict):
+        output_fields = sorted(str(key) for key in output_properties)
     side_effect = tool.side_effect_policy.to_dict()
     return {
         "name": tool.name,
@@ -507,7 +507,9 @@ def _list_block(name: str, tier: str, source: str, values: object) -> PromptBloc
 
 def _prompt_spec_blocks(assembly_name: str) -> tuple[PromptBlock, ...]:
     data = PROMPT_ASSEMBLIES_SPEC or {}
-    assembly = data.get(assembly_name) if isinstance(data, dict) else None
+    assembly = None
+    if isinstance(data, dict):
+        assembly = data.get(assembly_name)
     if not isinstance(assembly, dict):
         return ()
     raw_blocks = assembly.get("blocks")

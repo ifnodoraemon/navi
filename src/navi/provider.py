@@ -26,6 +26,13 @@ from .resource_gateway import (
 )
 
 
+def _default_val(val: Any, default: Any) -> Any:
+    v = default
+    if val is not None:
+        v = val
+    return v
+
+
 @dataclass(frozen=True)
 class ChatMessage:
     role: str
@@ -165,8 +172,8 @@ class OpenAICompatibleProvider:
         payload: dict[str, Any] = {
             "model": self.config.model,
             "messages": [{"role": msg.role, "content": msg.content} for msg in messages],
-            "temperature": 0 if temperature is None else temperature,
-            "max_tokens": 32768 if max_tokens is None else max_tokens,
+            "temperature": _default_val(temperature, 0),
+            "max_tokens": _default_val(max_tokens, 32768),
         }
         if self.config.response_transport == "sse":
             payload["stream"] = True
@@ -217,8 +224,8 @@ class OpenAICompatibleProvider:
         payload: dict[str, Any] = {
             "model": self.config.model,
             "messages": [{"role": msg.role, "content": msg.content} for msg in messages],
-            "temperature": 0 if temperature is None else temperature,
-            "max_tokens": 32768 if max_tokens is None else max_tokens,
+            "temperature": _default_val(temperature, 0),
+            "max_tokens": _default_val(max_tokens, 32768),
             "stream": True,
         }
         effective_options = _merge_request_options(
@@ -310,7 +317,7 @@ class AnthropicCompatibleProvider:
         self.last_usage = _anthropic_usage_facts(self.config, data)
         return _extract_anthropic_content(
             data,
-            tool_name=structured_tool["name"] if structured_tool else "",
+            tool_name=(structured_tool or {}).get("name", ""),
         )
 
     async def stream(
@@ -399,7 +406,7 @@ def _raise_provider_http_error(
                 raw_error.get("message") or raw_error.get("detail") or raw_error.get("errmsg"),
                 limit=500,
             )
-        elif isinstance(raw_error, str):
+        if isinstance(raw_error, str):
             provider_message = _bounded_error_text(raw_error, limit=500)
     raise ProviderHTTPError(
         status_code=response.status_code,
@@ -620,13 +627,15 @@ class ModelPool:
         output_schema: dict[str, Any] | None = None,
     ) -> str:
         provider = self.routes.get(role, self.default)
-        params = self.config.get_role_params(role) if self.config else {}
+        params = {}
+        if self.config:
+            params = self.config.get_role_params(role)
         temperature = params.get("temperature")
         max_tokens = params.get("max_tokens")
         role_request_options = params.get("request_options")
         gateway = self.current_resource_gateway()
         prompt_tokens = _estimate_prompt_tokens(messages)
-        output_token_limit = max(0, int(max_tokens if max_tokens is not None else 32768))
+        output_token_limit = max(0, int(_default_val(max_tokens, 32768)))
         estimated_tokens = prompt_tokens + output_token_limit
         grant = gateway.request(
             ResourceRequest(
@@ -697,13 +706,15 @@ class ModelPool:
                 "structured output"
             )
         provider = self.routes.get(role, self.default)
-        params = self.config.get_role_params(role) if self.config else {}
+        params = {}
+        if self.config:
+            params = self.config.get_role_params(role)
         temperature = params.get("temperature")
         max_tokens = params.get("max_tokens")
         role_request_options = params.get("request_options")
         gateway = self.current_resource_gateway()
         prompt_tokens = _estimate_prompt_tokens(messages)
-        output_token_limit = max(0, int(max_tokens if max_tokens is not None else 32768))
+        output_token_limit = max(0, int(_default_val(max_tokens, 32768)))
         estimated_tokens = prompt_tokens + output_token_limit
         grant = gateway.request(
             ResourceRequest(
@@ -729,22 +740,19 @@ class ModelPool:
                 yield token
         finally:
             usage = provider.last_usage
+            actual_tokens = None
+            actual_cost = None
+            if usage is not None:
+                actual_tokens = usage.total_tokens or (usage.input_tokens + usage.output_tokens)
+                actual_cost = _model_request_cost(
+                    params,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                )
             gateway.release(
                 grant_id=grant.grant_id,
-                actual_tokens=(
-                    usage.total_tokens or usage.input_tokens + usage.output_tokens
-                    if usage is not None
-                    else None
-                ),
-                actual_cost=(
-                    _model_request_cost(
-                        params,
-                        input_tokens=usage.input_tokens,
-                        output_tokens=usage.output_tokens,
-                    )
-                    if usage is not None
-                    else None
-                ),
+                actual_tokens=actual_tokens,
+                actual_cost=actual_cost,
             )
 
     def list_roles(self) -> list[str]:
@@ -1147,11 +1155,11 @@ def _anthropic_payload(
         if message.role == "system":
             system_parts.append(message.content)
             continue
-        role = "assistant" if message.role == "assistant" else "user"
+        role = {"assistant": "assistant"}.get(message.role, "user")
         conversation.append({"role": role, "content": message.content})
     payload = {
         "model": model,
-        "max_tokens": 32768 if max_tokens is None else max_tokens,
+        "max_tokens": _default_val(max_tokens, 32768),
         "system": "\n\n".join(system_parts),
         "messages": conversation or [{"role": "user", "content": ""}],
     }
@@ -1221,13 +1229,12 @@ def _provider_response_shape(data: dict[str, Any]) -> dict[str, Any]:
     shape["content_type"] = type(content).__name__
     if isinstance(content, list):
         shape["content_block_count"] = len(content)
-        shape["content_block_types"] = [
-            (
-                str(block.get("type"))
-                if isinstance(block, dict)
-                and block.get("type") in {"text", "tool_use", "thinking", "redacted_thinking"}
-                else "unknown"
-            )
-            for block in content[:10]
-        ]
+        known_block_types = {"text", "tool_use", "thinking", "redacted_thinking"}
+
+        def _block_type(block: Any) -> str:
+            if isinstance(block, dict) and block.get("type") in known_block_types:
+                return str(block.get("type"))
+            return "unknown"
+
+        shape["content_block_types"] = [_block_type(block) for block in content[:10]]
     return shape

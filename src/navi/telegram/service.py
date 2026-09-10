@@ -39,7 +39,10 @@ class TelegramService:
         self.runtime = runtime
         self.local_source = local_source
         self.session_alias_prefix = session_alias_prefix
-        self.client = client if client is not None else self._build_client()
+        client_instance = client
+        if client_instance is None:
+            client_instance = self._build_client()
+        self.client = client_instance
         self.dedup = ConnectorIngressDeduplicator(home)
         self.ingress = ConnectorIngressRuntime(
             home=home,
@@ -159,11 +162,9 @@ class TelegramService:
             return False
         response = await self.ingress.handle(message)
         if response is None or not response.text.strip():
-            finalization = (
-                response.facts.get("finalization")
-                if response is not None and isinstance(response.facts, dict)
-                else None
-            )
+            finalization = None
+            if response is not None and isinstance(response.facts, dict):
+                finalization = response.facts.get("finalization")
             if isinstance(finalization, dict) and finalization.get("durable_retry_pending") is True:
                 TraceStore(self.home).add_event(
                     trace_id=message_key,

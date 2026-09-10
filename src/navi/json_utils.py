@@ -6,20 +6,28 @@ from copy import deepcopy
 from typing import Any
 
 
-def json_object(value: str | bytes | None) -> dict[str, Any]:
+def json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
     try:
         parsed = json.loads(value or "{}")
     except (TypeError, json.JSONDecodeError):
         return {}
-    return parsed if isinstance(parsed, dict) else {}
+    if isinstance(parsed, dict):
+        return parsed
+    return {}
 
 
-def json_array(value: str | bytes | None) -> list[Any]:
+def json_array(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
     try:
         parsed = json.loads(value or "[]")
     except (TypeError, json.JSONDecodeError):
         return []
-    return parsed if isinstance(parsed, list) else []
+    if isinstance(parsed, list):
+        return parsed
+    return []
 
 
 JSON_SCHEMA_TYPE_CHECKS = {
@@ -88,7 +96,8 @@ def _composition_errors(value: Any, schema: dict[str, Any], *, path: str) -> lis
     conditional = schema.get("if")
     if isinstance(conditional, dict):
         matched = not json_schema_errors(value, conditional, path=path)
-        branch = schema.get("then" if matched else "else")
+        branch_key = {True: "then", False: "else"}[matched]
+        branch = schema.get(branch_key)
         if isinstance(branch, dict):
             errors.extend(json_schema_errors(value, branch, path=path))
     return errors
@@ -118,7 +127,7 @@ def _object_errors(
     additional = schema.get("additionalProperties")
     if additional is False and isinstance(properties, dict):
         errors.extend(f"{path}.{key} is not declared" for key in value if key not in properties)
-    elif isinstance(additional, dict) and isinstance(properties, dict):
+    if isinstance(additional, dict) and isinstance(properties, dict):
         for key, item in value.items():
             if key not in properties:
                 errors.extend(json_schema_errors(item, additional, path=f"{path}.{key}"))
@@ -193,7 +202,9 @@ def normalize_json_schema(schema: dict[str, Any], *, output: bool = False) -> di
     one from property order would turn declaration order into runtime policy.
     """
 
-    normalized = deepcopy(schema) if isinstance(schema, dict) else {}
+    normalized: dict[str, Any] = {}
+    if isinstance(schema, dict):
+        normalized = deepcopy(schema)
 
     def visit(node: dict[str, Any], *, root: bool = False) -> None:
         properties = node.get("properties")

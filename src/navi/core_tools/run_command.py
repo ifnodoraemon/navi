@@ -41,11 +41,9 @@ def _run_command(
         f"{home_dir}/.local/bin",
         f"{home_dir}/bin",
         *nvm_paths,
-        # Persistent sandbox HOME (bind-mounted as $HOME/.local/bin inside the
-        # sandbox) may hold pipx/pip-installed binaries.  Without it the host
-        # pre-flight and the sandbox executable resolver reject them.
-        *(str(sandbox_home / ".local" / "bin") if sandbox_home is not None else []),
     ]
+    if sandbox_home is not None:
+        extra_paths.append(str(sandbox_home / ".local" / "bin"))
     env["PATH"] = os.pathsep.join(extra_paths + [current_path])
     binary_error = _resolve_binary_error(command, path=env["PATH"])
     if binary_error and not _sandbox_home_has_binary(command, sandbox_home):
@@ -59,6 +57,8 @@ def _run_command(
         }
 
     sandboxed = sandbox_workspace is not None
+    backend_options = {True: "bubblewrap", False: "none"}
+    sandbox_backend = backend_options[sandboxed]
     if sandbox_workspace is not None:
         command, sandbox_error = bubblewrap_command(
             command,
@@ -147,7 +147,7 @@ def _run_command(
                     "exit_code": 124,
                     "timed_out": True,
                     "sandboxed": sandboxed,
-                    "sandbox_backend": "bubblewrap" if sandboxed else "none",
+                    "sandbox_backend": sandbox_backend,
                 }
 
             return {
@@ -156,7 +156,7 @@ def _run_command(
                 "exit_code": proc.returncode,
                 "timed_out": False,
                 "sandboxed": sandboxed,
-                "sandbox_backend": "bubblewrap" if sandboxed else "none",
+                "sandbox_backend": sandbox_backend,
             }
         except OSError as exc:
             try:
@@ -169,7 +169,7 @@ def _run_command(
                 "exit_code": 127,
                 "timed_out": False,
                 "sandboxed": sandboxed,
-                "sandbox_backend": "bubblewrap" if sandboxed else "none",
+                "sandbox_backend": sandbox_backend,
             }
         except Exception:
             try:
@@ -198,7 +198,7 @@ def _run_command(
             "exit_code": 124,
             "timed_out": True,
             "sandboxed": sandboxed,
-            "sandbox_backend": "bubblewrap" if sandboxed else "none",
+            "sandbox_backend": sandbox_backend,
         }
     except OSError as exc:
         return {
@@ -207,7 +207,7 @@ def _run_command(
             "exit_code": 127,
             "timed_out": False,
             "sandboxed": sandboxed,
-            "sandbox_backend": "bubblewrap" if sandboxed else "none",
+            "sandbox_backend": sandbox_backend,
         }
     return {
         "stdout": _truncate_output(result.stdout),
@@ -215,7 +215,7 @@ def _run_command(
         "exit_code": result.returncode,
         "timed_out": False,
         "sandboxed": sandboxed,
-        "sandbox_backend": "bubblewrap" if sandboxed else "none",
+        "sandbox_backend": sandbox_backend,
     }
 
 

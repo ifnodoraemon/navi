@@ -87,7 +87,7 @@ def _status(home: Path) -> dict[str, Any]:
 
 def _diagnostics(home: Path) -> list[dict[str, str]]:
     config = load_telegram_config(home)
-    status = "ok" if config.enabled and config.bot_token else "missing"
+    status = {True: "ok", False: "missing"}[bool(config.enabled and config.bot_token)]
     return [
         {
             "name": f"connector.{SPEC.name}.config",

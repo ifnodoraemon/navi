@@ -217,18 +217,14 @@ def provider_failure_facts(exc: Exception) -> dict[str, Any]:
         (ProviderHTTPError, ProviderResponseError, httpx.TransportError),
     )
     retryable = isinstance(exc, httpx.TransportError)
-    retry_after_seconds = (
-        PROVIDER_TRANSPORT_RETRY_AFTER_SECONDS if retryable else 0.0
-    )
+    retry_after_seconds = float(retryable) * PROVIDER_TRANSPORT_RETRY_AFTER_SECONDS
     status_code = 0
     if isinstance(exc, ProviderHTTPError):
         status_code = exc.status_code
         retryable = status_code in {408, 409, 425, 429} or status_code >= 500
-        retry_after_seconds = (
-            exc.retry_after_seconds
-            if retryable and exc.retry_after_seconds > 0
-            else PROVIDER_TRANSPORT_RETRY_AFTER_SECONDS if retryable else 0.0
-        )
+        retry_after_seconds = float(retryable) * PROVIDER_TRANSPORT_RETRY_AFTER_SECONDS
+        if retryable and exc.retry_after_seconds > 0:
+            retry_after_seconds = exc.retry_after_seconds
     error_text = str(exc).strip()
     if not error_text:
         error_text = repr(exc)

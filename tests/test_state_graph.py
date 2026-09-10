@@ -616,7 +616,7 @@ class _RetryPlanningProvider:
 
     async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
         self.calls += 1
-        content = "wrong\n" if self.calls == 1 else "agent\n"
+        content = {1: "wrong\n"}.get(self.calls, "agent\n")
         return json.dumps(
             {
                 "syscalls": [

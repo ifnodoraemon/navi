@@ -409,7 +409,9 @@ class SQLiteMemoryProvider:
                 return []
             clauses.append("scope IN (" + ",".join("?" for _ in scopes) + ")")
             values.extend(scopes)
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        where = ""
+        if clauses:
+            where = " WHERE " + " AND ".join(clauses)
         values.append(limit)
         with connect(self.db_path) as conn:
             rows = conn.execute(
@@ -436,7 +438,9 @@ class SQLiteMemoryProvider:
                 """,
                 (item_id,),
             ).fetchone()
-        return self._item_from_row(row) if row else None
+        if not row:
+            return None
+        return self._item_from_row(row)
 
     def update_item(
         self,
@@ -710,7 +714,9 @@ class SQLiteMemoryProvider:
                 """,
                 (alias,),
             ).fetchone()
-        return SessionAlias(*row) if row else None
+        if not row:
+            return None
+        return SessionAlias(*row)
 
     def list_session_aliases(self, limit: int = 50) -> list[SessionAlias]:
         with connect(self.db_path) as conn:
@@ -830,10 +836,12 @@ def _message_identity_filter(
     if session_id:
         clauses.append("messages.session_id = ?")
         values.append(session_id)
-    if source and peer_id and sender_id:
+    has_full_sender = bool(source and peer_id and sender_id)
+    if has_full_sender:
         clauses.append("(messages.source = ? AND messages.peer_id = ? AND messages.sender_id = ?)")
         values.extend([source, peer_id, sender_id])
-    elif sender_id:
+    if not has_full_sender and sender_id:
         clauses.append("messages.sender_id = ?")
         values.append(sender_id)
-    return (" OR ".join(clauses) if clauses else "1=1"), values
+    clause_str = " OR ".join(clauses) or "1=1"
+    return clause_str, values

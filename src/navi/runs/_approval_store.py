@@ -46,6 +46,18 @@ APPROVALS_TABLE = Table(
 )
 
 
+def _where_clause(clauses: list[str]) -> str:
+    if not clauses:
+        return ""
+    return f" WHERE {' AND '.join(clauses)}"
+
+
+def _resolve_time(now: float | None) -> float:
+    if now is not None:
+        return now
+    return time.time()
+
+
 class ApprovalStoreMixin:
     """Mixin providing approval persistence methods to RunStore."""
 
@@ -145,7 +157,7 @@ class ApprovalStoreMixin:
             peer_id=peer_id,
             sender_id=sender_id,
         )
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        where = _where_clause(clauses)
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 f"""
@@ -287,7 +299,7 @@ class ApprovalStoreMixin:
         sender_id: str = "",
         now: float | None = None,
     ) -> Approval | None:
-        threshold = time.time() if now is None else now
+        threshold = _resolve_time(now)
         clauses = ["action = ?", "status = ?", "expires_at >= ?"]
         params: list[object] = [
             APPROVAL_ACTION_SESSION_ELEVATION,
@@ -364,7 +376,7 @@ class ApprovalStoreMixin:
     def get_approval(self, approval_id: str) -> Approval | None:
         with connect(self.db_path) as conn:
             row = self._select_approval_row(conn, "id = ?", [approval_id])
-        return self._approval_from_row(row) if row else None
+        return self._approval_from_row(row)
 
     def reject_pending_approvals_for_run(
         self,
@@ -393,7 +405,7 @@ class ApprovalStoreMixin:
             return int(cursor.rowcount or 0)
 
     def expire_pending_approvals(self, *, now: float | None = None) -> int:
-        threshold = time.time() if now is None else now
+        threshold = _resolve_time(now)
         with connect(self.db_path) as conn:
             cursor = conn.execute(
                 """
@@ -408,7 +420,7 @@ class ApprovalStoreMixin:
     def _approval_where(self, clauses: list[str], params: list[object]) -> Approval | None:
         with connect(self.db_path) as conn:
             row = self._select_approval_row(conn, " AND ".join(clauses), params)
-        return self._approval_from_row(row) if row else None
+        return self._approval_from_row(row)
 
     @staticmethod
     def _select_approval_row(conn, where: str, params: list[object] | tuple[object, ...]):
@@ -426,7 +438,7 @@ class ApprovalStoreMixin:
 
     def _get_approval_with_connection(self, conn, approval_id: str) -> Approval | None:
         row = self._select_approval_row(conn, "id = ?", [approval_id])
-        return self._approval_from_row(row) if row else None
+        return self._approval_from_row(row)
 
     @staticmethod
     def _append_approval_filters(
@@ -464,7 +476,9 @@ class ApprovalStoreMixin:
             params.append(args_json)
 
     @staticmethod
-    def _approval_from_row(row: tuple) -> Approval:
+    def _approval_from_row(row: tuple | None) -> Approval | None:
+        if not row:
+            return None
         return Approval(*row)
 
     @staticmethod

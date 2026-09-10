@@ -53,6 +53,11 @@ from .trace import TraceStore
 from .tools import API_CONTEXT
 
 
+def _prefix_str(prefix: str, val: Any) -> str:
+    s = str(val or "").strip()
+    return {True: f"{prefix}{s}", False: ""}[bool(s)]
+
+
 def _invoke_capability(name: str, args: dict, *, execution_context: str = API_CONTEXT) -> dict:
     """Invoke a capability through the unified registry (same path the API
     takes), so CLI writes go through hook gates and schema validation."""
@@ -68,7 +73,9 @@ def _invoke_capability(name: str, args: dict, *, execution_context: str = API_CO
     needs_runtime = spec.runtime_policy == "required" or (
         spec.runtime_policy == "when_auto_start" and bool(args.get("auto_start", True))
     )
-    runtime = build_runtime(home) if needs_runtime else None
+    runtime = None
+    if needs_runtime:
+        runtime = build_runtime(home)
     if runtime is not None:
         capabilities = build_capability_registry(
             home,
@@ -109,7 +116,7 @@ def _capability_workspace(home: Path, args: dict) -> str:
     loop_run_id = str(args.get("loop_run_id") or "").strip()
     if loop_run_id and not goal_id:
         loop_run = LoopRunStore(home).get_run(loop_run_id)
-        goal_id = loop_run.goal_id if loop_run is not None else ""
+        goal_id = getattr(loop_run, "goal_id", "")
     if goal_id:
         goal = GoalStore(home).get(goal_id)
         if goal is not None and goal.workspace:
@@ -195,11 +202,10 @@ def chat() -> None:
 
         typer.echo(f"navi: {result.surfaced_text()}")
 
-        # Presentation is driven by the structured `options` fact, not by
-        # interpreting the agent's action label; control surfaces must not
-        # encode agent action semantics.
-        options = result.facts.get("options") if result.facts else None
-        pending_options = options if isinstance(options, list) and options else []
+        options = (result.facts or {}).get("options")
+        pending_options = []
+        if isinstance(options, list):
+            pending_options = options
 
 
 async def _run_chat_turn(
@@ -240,8 +246,10 @@ def api(
     home = ensure_home()
     write_default_config(home)
     config = load_config(home)
-    host = config.api.host if host is None else host
-    port = config.api.port if port is None else port
+    if host is None:
+        host = config.api.host
+    if port is None:
+        port = config.api.port
     typer.echo(f"Navi API: http://{host}:{port}")
     uvicorn.run(
         create_app(
@@ -289,7 +297,7 @@ def status() -> None:
     )
     typer.echo(f"tools={len(tools)} sessions={len(sessions)} goals={goals}")
     for adapter in connectors:
-        marker = "enabled" if adapter.enabled(home) else "disabled"
+        marker = {True: "enabled", False: "disabled"}[bool(adapter.enabled(home))]
         facts = adapter.status(home)
         health = str(facts.get("status") or "unknown")
         detail = ""
@@ -327,7 +335,7 @@ def doctor(connectivity: bool = False) -> None:
     typer.echo("Navi doctor")
     typer.echo(f"model: {config.model.provider}/{config.model.model}")
     for check in checks:
-        detail = f" {check.detail}" if check.detail else ""
+        detail = _prefix_str(" ", check.detail)
         typer.echo(f"{check.name}: {check.status}{detail}")
     if any(check.status == "error" for check in checks):
         raise typer.Exit(code=1)
@@ -492,7 +500,10 @@ def memory_revoke(item_id: str) -> None:
 @session_app.command("new")
 def session_new(alias: str | None = typer.Argument(None)) -> None:
     """Create a new conversation session, optionally bound to an alias."""
-    facts = _invoke_capability("session.create", {"alias": alias} if alias else {})
+    payload = {}
+    if alias:
+        payload["alias"] = alias
+    facts = _invoke_capability("session.create", payload)
     typer.echo(str(facts.get("session_id") or ""))
 
 
@@ -524,7 +535,7 @@ def session_show(session_id: str, limit: int = 50) -> None:
 def auth_status() -> None:
     """Show external auth providers without exposing secrets."""
     for item in AuthInspector().status():
-        marker = "ok" if item.installed and item.authenticated else "missing"
+        marker = {True: "ok", False: "missing"}[bool(item.installed and item.authenticated)]
         typer.echo(f"{item.name}: {marker} path={item.path or '-'} version={item.version or '-'}")
 
 
@@ -700,7 +711,7 @@ def eval_claw(
     if not json_output:
         for result in results:
             marker = {True: "ok", False: "fail"}[bool(result.ok)]
-            domains = ",".join(result.error_domains) if result.error_domains else "-"
+            domains = {True: ",".join(result.error_domains), False: "-"}[bool(result.error_domains)]
             typer.echo(
                 f"{marker} {result.task_id} pass={result.pass_count}/{result.attempts} domains={domains}"
             )
@@ -795,7 +806,7 @@ def trace_list() -> None:
 def trace_show(trace_id: str) -> None:
     """Show events for one full-flow trace."""
     for event in TraceStore(ensure_home()).list_events(trace_id):
-        marker = "ok" if event.ok else "fail"
+        marker = {True: "ok", False: "fail"}[bool(event.ok)]
         typer.echo(
             f"{event.phase} {marker} tool={event.tool or '-'} role={event.model_role or '-'}"
         )
@@ -853,7 +864,7 @@ def trace_decisions(trace_id: str) -> None:
 def trace_runs(trace_id: str) -> None:
     """Show LangSmith-style run/span projection for one trace."""
     for run in TraceStore(ensure_home()).list_run_views(trace_id):
-        parent = f" parent={run.parent_run_id}" if run.parent_run_id else ""
+        parent = _prefix_str(" parent=", run.parent_run_id)
         typer.echo(f"{run.id} {run.run_type} {run.status} {run.name}{parent}")
 
 
@@ -886,7 +897,7 @@ def _trace_evaluation_line(evaluation) -> str:
     }
     evidence, outcome, failure_domain = parsers[isinstance(evaluation, dict)](evaluation)
     rule = str(evidence.get("evaluation_rule") or "").strip()
-    suffix = f" rule={rule}" if rule else ""
+    suffix = _prefix_str(" rule=", rule)
     return f"{outcome} {failure_domain}{suffix}"
 
 
@@ -894,8 +905,8 @@ def _trace_evaluation_line(evaluation) -> str:
 def goal_list(phase: str = "", limit: int = 50) -> None:
     """List durable goals as facts."""
     for goal in GoalStore(ensure_home()).list(phase=phase, limit=limit):
-        task = f" task={goal.run_id}" if goal.run_id else ""
-        trace = f" trace={goal.trace_id}" if goal.trace_id else ""
+        task = _prefix_str(" task=", goal.run_id)
+        trace = _prefix_str(" trace=", goal.trace_id)
         typer.echo(
             f"{goal.id} phase={goal.phase} governance={goal.governance} resolution={goal.resolution}{task}{trace} {goal.objective}"
         )
@@ -1041,7 +1052,7 @@ def evolution_list() -> None:
 def evolution_targets() -> None:
     """List evolvable behavior target types."""
     for target in list_evolution_targets():
-        marker = "permissioned" if target["permissions_can_expand"] else "content"
+        marker = {True: "permissioned", False: "content"}[bool(target["permissions_can_expand"])]
         typer.echo(
             f"{target['target_type']} source={target['source']} kind={marker} {target['description']}"
         )
@@ -1220,7 +1231,7 @@ def connectors_list() -> None:
     """List configured connector adapters."""
     home = ensure_home()
     for adapter in load_connector_adapters():
-        marker = "enabled" if adapter.enabled(home) else "disabled"
+        marker = {True: "enabled", False: "disabled"}[bool(adapter.enabled(home))]
         typer.echo(f"{adapter.name}: {marker}")
 
 

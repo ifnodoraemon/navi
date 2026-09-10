@@ -58,6 +58,20 @@ _BACKGROUND_NOTIFICATION_SCHEMA = {
 }
 
 
+def _as_dict(val: Any) -> dict:
+    res = {}
+    if isinstance(val, dict):
+        res = val
+    return res
+
+
+def _resolve_now(now: float | None = None) -> float:
+    t = time.time()
+    if now is not None:
+        t = float(now)
+    return t
+
+
 class WeixinService:
     def __init__(
         self,
@@ -78,7 +92,9 @@ class WeixinService:
         self.session_alias_prefix = session_alias_prefix
         self.store = WeixinStore(home)
         self.dedup = ConnectorIngressDeduplicator(home)
-        self.client = client if client is not None else self._build_client()
+        self.client = client
+        if self.client is None:
+            self.client = self._build_client()
         self.delivery_outbox = DeliveryOutboxStore(home)
         self.delivery_coordinator = DeliveryCoordinator(self.delivery_outbox)
         self.sessions = WeixinSessionStore(home)
@@ -98,7 +114,7 @@ class WeixinService:
         token = self.config.token
         if self.config.account_id and not token:
             account = self.store.load_account(self.config.account_id)
-            token = account.token if account else ""
+            token = getattr(account, "token", "")
         return WeixinClient(
             base_url=self.config.base_url,
             token=token,
@@ -280,11 +296,10 @@ class WeixinService:
         self.health.record_user_activity()
         duplicate = self.dedup.check(message)
         if duplicate.duplicate:
-            event_name = (
-                "message.duplicate"
-                if duplicate.reason == "message_id"
-                else "message.duplicate_content"
-            )
+            event_name = {
+                True: "message.duplicate",
+                False: "message.duplicate_content",
+            }[duplicate.reason == "message_id"]
             self.record_event(
                 event_name,
                 message_id=update.message_id,
@@ -304,9 +319,9 @@ class WeixinService:
         if not response:
             raise RuntimeError("channel response is empty")
         response_delivery = connector_delivery_from_facts(response.facts)
-        finalization = (
-            response.facts.get("finalization") if isinstance(response.facts, dict) else None
-        )
+        finalization = None
+        if isinstance(response.facts, dict):
+            finalization = response.facts.get("finalization")
         if (
             response_delivery is None
             and not response.text.strip()
@@ -386,11 +401,11 @@ class WeixinService:
     ) -> "ResponseReadyEvent | None":
         typing_ticket = await self._typing_ticket(update.sender_id, context_token=context_token)
         stop_typing = asyncio.Event()
-        typing_task = (
-            asyncio.create_task(self._keep_typing(update.sender_id, typing_ticket, stop_typing))
-            if typing_ticket
-            else None
-        )
+        typing_task = None
+        if typing_ticket:
+            typing_task = asyncio.create_task(
+                self._keep_typing(update.sender_id, typing_ticket, stop_typing)
+            )
         try:
             return await self.ingress.handle(message)
         except Exception as exc:
@@ -498,7 +513,7 @@ class WeixinService:
         peer_id = str(result.get("peer_id") or "") or self.config.home_channel
         if not peer_id:
             return
-        event_facts = result.get("facts") if isinstance(result.get("facts"), dict) else {}
+        event_facts = _as_dict(result.get("facts"))
         text = await self._compose_event_notification(
             {
                 "event": "background_event",
@@ -621,10 +636,13 @@ class WeixinService:
             sessions=self.sessions,
             send_lock=self._send_lock,
         )
+        min_priority = None
+        if self.health.proactive_circuit_open():
+            min_priority = 1
         outcomes = await self.delivery_coordinator.drain(
             transport,
             limit=10,
-            minimum_priority=1 if self.health.proactive_circuit_open() else None,
+            minimum_priority=min_priority,
         )
         for outcome in outcomes:
             self._record_delivery_outbox_outcome(outcome)
@@ -666,7 +684,7 @@ class WeixinService:
 
         if not self.sessions.get(account_id, peer_id, now=now):
             return []
-        current_time = time.time() if now is None else float(now)
+        current_time = _resolve_now(now)
         requeued: list[str] = []
         for item in self.delivery_outbox.list_items(
             channel=self.local_source,
@@ -707,23 +725,24 @@ class WeixinService:
         proactive = item.body_provenance != "response_ready"
         if ok:
             self.health.record_egress_success(proactive=proactive, at=item.sent_at or None)
-        elif outcome.failure is not None:
+        if not ok and outcome.failure is not None:
+            retry_after = float(outcome.failure.retry_after_seconds or 0.0) * float(outcome.state == "retry_scheduled")
             self.health.record_egress_failure(
                 proactive=proactive,
                 error=f"{outcome.failure.reason}: {outcome.failure.error}",
                 provider_code=outcome.failure.provider_code,
-                retry_after_seconds=(
-                    outcome.failure.retry_after_seconds
-                    if outcome.state == "retry_scheduled"
-                    else 0.0
-                ),
+                retry_after_seconds=retry_after,
             )
+        delivery_events = {
+            "retry_scheduled": ("reply.deferred", "Connector delivery retry scheduled"),
+        }
+        event_name, event_msg = delivery_events.get(
+            outcome.state, ("reply.error", "Connector delivery item failed")
+        )
+        if ok:
+            event_name, event_msg = ("reply.sent", "Connector delivery item accepted")
         self.record_event(
-            "reply.sent"
-            if ok
-            else "reply.deferred"
-            if outcome.state == "retry_scheduled"
-            else "reply.error",
+            event_name,
             peer_id=item.peer_id,
             run_id=item.run_id,
             **payload,
@@ -739,13 +758,7 @@ class WeixinService:
                 sender_id=item.sender_id,
                 ok=ok,
                 output_data=payload,
-                message=(
-                    "Connector delivery item accepted"
-                    if ok
-                    else "Connector delivery retry scheduled"
-                    if outcome.state == "retry_scheduled"
-                    else "Connector delivery item failed"
-                ),
+                message=event_msg,
             )
             if outcome.state != "retry_scheduled":
                 trace.evaluate_trace(item.trace_id)
@@ -758,15 +771,16 @@ class WeixinService:
             )
         if outcome.state in {"failed", "expired"} and item.goal_id and item.run_id:
             try:
+                failure_error = item.error
+                failure_reason = "connector_delivery_failed"
+                if outcome.failure:
+                    failure_error = f"{outcome.failure.reason}: {outcome.failure.error}"
+                    failure_reason = outcome.failure.reason
                 GoalStore(self.home).record_delivery_failure(
                     run_id=item.run_id,
                     channel=self.local_source,
-                    error=f"{outcome.failure.reason}: {outcome.failure.error}"
-                    if outcome.failure
-                    else item.error,
-                    error_reason=outcome.failure.reason
-                    if outcome.failure
-                    else "connector_delivery_failed",
+                    error=failure_error,
+                    error_reason=failure_reason,
                     trace_id=item.trace_id,
                     delivery_id=item.batch_id,
                 )
@@ -912,9 +926,10 @@ class WeixinService:
         """
         facts = facts or {}
         delivery = connector_delivery_from_facts(facts)
-        if action == "connector_outbound" and delivery is None:
-            raise RuntimeError("connector_outbound response is missing a valid delivery contract")
-        outbound_text = (delivery.text if delivery is not None else text).strip()
+        outbound_candidate = text
+        if delivery is not None:
+            outbound_candidate = delivery.text
+        outbound_text = outbound_candidate.strip()
         if not outbound_text and delivery is None:
             raise RuntimeError("refusing to record an empty connector response as delivered")
         trace_id = str(getattr(delivery, "delivery_id", "") or "") or TraceStore.new_trace_id()
@@ -988,7 +1003,7 @@ class WeixinService:
 
 def _background_loop_diagnostics(state: Any) -> dict[str, object]:
     """Project bounded persisted failure facts for the notification model."""
-    evidence = state.evidence if isinstance(state.evidence, dict) else {}
+    evidence = _as_dict(state.evidence)
     recovery: dict[str, Any] = {}
     facts = evidence.get("facts")
     if isinstance(facts, dict) and isinstance(facts.get("recovery"), dict):
@@ -1020,7 +1035,7 @@ def _background_loop_diagnostics(state: Any) -> dict[str, object]:
             if not isinstance(raw, dict):
                 continue
             checker_evidence = raw.get("evidence")
-            checker_facts = checker_evidence if isinstance(checker_evidence, dict) else {}
+            checker_facts = _as_dict(checker_evidence)
             checker_results.append(
                 {
                     "name": str(raw.get("name") or ""),
@@ -1039,7 +1054,7 @@ def _background_loop_diagnostics(state: Any) -> dict[str, object]:
             "ok": bool(executor.get("ok", False)),
             "error_reason": str(executor.get("error_reason") or ""),
             "terminal": bool(executor.get("terminal", False)),
-            "facts": executor.get("facts") if isinstance(executor.get("facts"), dict) else {},
+            "facts": _as_dict(executor.get("facts")),
         }
     return diagnostics
 

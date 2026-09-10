@@ -96,21 +96,24 @@ async def run_goal_loop_state_graph(
         scope_id=base.loop_run.run_id,
     )
     bind_gateway = getattr(runtime.provider, "bind_resource_gateway", None)
+    trace_store = None
+    if execution_context.trace_id:
+        trace_store = TraceStore(home)
     runner = DurableStateGraphRunner(
         home=home,
         gateway=resource_gateway,
         planner_port=planner_port,
         executor_port=executor_port,
         semantic_checker_port=checker_port,
-        trace_store=TraceStore(home) if execution_context.trace_id else None,
+        trace_store=trace_store,
         trace_context=execution_context,
         execution_owner=execution_owner,
         account_phase_gates=not callable(bind_gateway),
     )
     try:
-        gateway_context = (
-            bind_gateway(resource_gateway) if callable(bind_gateway) else nullcontext()
-        )
+        gateway_context = nullcontext()
+        if callable(bind_gateway):
+            gateway_context = bind_gateway(resource_gateway)
         with gateway_context:
             graph_result = await runner.run_async(
                 base.loop_spec,
@@ -165,7 +168,9 @@ async def resume_goal_loop_run(
     if goal is None:
         raise KeyError(f"goal not found for loop run: {state.goal_id}")
     preserve_pause_evidence = resource_retry or retry_pause
-    prior_evidence = dict(state.evidence) if preserve_pause_evidence else {}
+    prior_evidence: dict[str, Any] = {}
+    if preserve_pause_evidence:
+        prior_evidence = dict(state.evidence)
     if preserve_pause_evidence and "capability_result" not in prior_evidence:
         executor = prior_evidence.get("executor")
         if isinstance(executor, dict):
@@ -177,10 +182,13 @@ async def resume_goal_loop_run(
         if action == "chat" and message:
             prior_evidence.setdefault("candidate_response", message)
             prior_evidence.setdefault("candidate_response_action", action)
-    if retry_pause:
-        service.loop_runs.reopen_retryable_pause(loop_run_id)
-    elif resource_retry:
-        service.loop_runs.reopen_resource_pause(loop_run_id)
+    reopen_actions = [
+        (retry_pause, service.loop_runs.reopen_retryable_pause),
+        (resource_retry, service.loop_runs.reopen_resource_pause),
+    ]
+    reopen_op = next((op for matched, op in reopen_actions if matched), None)
+    if reopen_op is not None:
+        reopen_op(loop_run_id)
     prepared = service.resume_loop(loop_run_id=loop_run_id, workspace=goal.workspace)
     permission_ceiling = prepared.loop_spec.goal.permission_ceiling
 
@@ -216,14 +224,20 @@ async def resume_goal_loop_run(
             goal=active_goal or prepared.goal,
         )
 
+    allowed_tools_map = {
+        True: (None, None),
+        False: (
+            set(prepared.loop_spec.allowed_capabilities),
+            frozenset(prepared.loop_spec.allowed_capabilities),
+        ),
+    }
+    allowed_set, allowed_frozenset = allowed_tools_map[
+        "*" in prepared.loop_spec.allowed_capabilities
+    ]
     planner_capabilities = CapabilityRegistry(
         home=home,
         project_dir=Path(goal.workspace),
-        allowed_tools=(
-            None
-            if "*" in prepared.loop_spec.allowed_capabilities
-            else set(prepared.loop_spec.allowed_capabilities)
-        ),
+        allowed_tools=allowed_set,
         permission_ceiling=permission_ceiling,
         runtime=runtime,
     )
@@ -238,11 +252,7 @@ async def resume_goal_loop_run(
         trace_id=trace_id,
         input_text=input_text,
         event_bus=event_bus,
-        allowed_tools=(
-            None
-            if "*" in prepared.loop_spec.allowed_capabilities
-            else frozenset(prepared.loop_spec.allowed_capabilities)
-        ),
+        allowed_tools=allowed_frozenset,
     )
     return await run_goal_loop_state_graph(
         home=home,

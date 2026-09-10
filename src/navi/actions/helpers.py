@@ -48,13 +48,17 @@ def transition_facts(entity_type: str, entity_id: str, transition: str) -> dict[
 
 def arg_text(args: dict[str, Any], key: str) -> str:
     value = args.get(key)
-    return str(value).strip() if value is not None else ""
+    if value is None:
+        return ""
+    return str(value).strip()
 
 
 def approval_selection(args: dict[str, Any], *, code: str, run_id: str, batch_id: str = "") -> str:
     if batch_id and not code and not run_id:
         return "batch_id"
-    return "current_run" if run_id and not code else "explicit_code"
+    if run_id and not code:
+        return "current_run"
+    return "explicit_code"
 
 
 def approval_failure_is_terminal(facts: dict[str, Any] | None) -> bool:
@@ -65,7 +69,9 @@ def approval_error_reason(facts: dict[str, Any] | None) -> str:
     reason = approval_reason(facts)
     if reason in {"invalid_decision", "approval_identifier_missing"}:
         return "schema_mismatch"
-    return "not_found" if reason else "unknown"
+    if reason:
+        return "not_found"
+    return "unknown"
 
 
 def approval_reason(facts: dict[str, Any] | None) -> str:

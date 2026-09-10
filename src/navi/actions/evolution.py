@@ -64,7 +64,9 @@ class EvolutionProposeCapability(BaseCapability):
             target_type = _arg_text(args, "target_type")
             target_id = _arg_text(args, "target_id")
             candidate_value = args.get("after")
-            candidate = candidate_value if isinstance(candidate_value, str) else ""
+            candidate = ""
+            if isinstance(candidate_value, str):
+                candidate = candidate_value
             targets = EvolutionTargetAdapterRegistry(self.home)
             adapter = targets.get(target_type)
             before = adapter.read(target_id)
@@ -183,11 +185,15 @@ class EvolutionObserveCapability(BaseCapability):
                 "evolution.observe requires event_id.", reason="schema_mismatch"
             )
         try:
+            raw_evidence = args.get("evidence")
+            evidence: dict[str, Any] = {}
+            if isinstance(raw_evidence, dict):
+                evidence = raw_evidence
             activation = EvolutionExperimentStore(self.home).observe(
                 event_id,
                 successes=_nonnegative_int(args.get("successes")),
                 errors=_nonnegative_int(args.get("errors")),
-                evidence=args.get("evidence") if isinstance(args.get("evidence"), dict) else {},
+                evidence=evidence,
                 rollback=EvolutionEngine(self.home).rollback,
             )
         except KeyError as exc:
@@ -216,20 +222,34 @@ class EvolutionStateCapability(BaseCapability):
         ledger = EvolutionLedger(self.home)
         experiments = EvolutionExperimentStore(self.home)
         targets = EvolutionTargetAdapterRegistry(self.home)
-        proposal = ledger.get_proposal(proposal_id) if proposal_id else None
-        experiment = experiments.latest_experiment(proposal_id) if proposal_id else None
-        activation = experiments.activation_for_event(event_id) if event_id else None
+        proposal = None
+        experiment = None
+        if proposal_id:
+            proposal = ledger.get_proposal(proposal_id)
+            experiment = experiments.latest_experiment(proposal_id)
+        activation = None
+        if event_id:
+            activation = experiments.activation_for_event(event_id)
         if proposal_id and proposal is None:
             return _evolution_error(
                 "proposal not found", reason="not_found", proposal_id=proposal_id
             )
         if event_id and activation is None:
             return _evolution_error("activation not found", reason="not_found", event_id=event_id)
+        proposal_facts: dict[str, Any] = {}
+        if proposal is not None:
+            proposal_facts = _proposal_facts(proposal)
+        experiment_facts: dict[str, Any] = {}
+        if experiment is not None:
+            experiment_facts = experiment.to_dict()
+        activation_facts: dict[str, Any] = {}
+        if activation is not None:
+            activation_facts = activation.to_dict()
         facts = {
             **_transition_facts("evolution_state", proposal_id or event_id or "latest", "observed"),
-            "proposal": _proposal_facts(proposal) if proposal else {},
-            "experiment": experiment.to_dict() if experiment else {},
-            "activation": activation.to_dict() if activation else {},
+            "proposal": proposal_facts,
+            "experiment": experiment_facts,
+            "activation": activation_facts,
             "active_observations": [
                 item.to_dict()
                 for item in experiments.list_activations(status="observing", limit=100)

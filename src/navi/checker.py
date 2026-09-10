@@ -160,4 +160,6 @@ def _step_is_command_like(step: VerificationStep) -> bool:
 
 def _checker_fact(facts: dict[str, Any]) -> dict[str, Any]:
     value = facts.get("checker_fact")
-    return value if isinstance(value, dict) else {}
+    if isinstance(value, dict):
+        return value
+    return {}

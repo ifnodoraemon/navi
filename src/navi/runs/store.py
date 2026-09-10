@@ -51,6 +51,78 @@ RUNS_TABLE = Table(
 )
 
 
+def _int_cell(row: tuple | None) -> int:
+    if not row:
+        return 0
+    return int(row[0])
+
+
+def _where_clause(clauses: list[str]) -> str:
+    if not clauses:
+        return ""
+    return f" WHERE {' AND '.join(clauses)}"
+
+
+_ACCEPTANCE_BY_OK: dict[bool, str] = {True: "accepted", False: "rejected"}
+_RESOLUTION_BY_OK: dict[bool, str] = {True: "success", False: "failed"}
+
+
+def _receipt_error(ok: bool, error: str) -> str:
+    if ok:
+        return ""
+    return error or "capability_failed"
+
+
+def _select_settleable_receipt(linked: list[Any], legacy: list[Any]) -> Any | None:
+    if linked:
+        return linked[-1]
+    if len(legacy) == 1:
+        return legacy[0]
+    return None
+
+
+def _merge_run_updates(
+    run: Run,
+    *,
+    phase: str | None,
+    governance: str | None,
+    acceptance: str | None,
+    resolution: str | None,
+    plan_summary: str | None,
+    result_summary: str | None,
+    error: str | None,
+    trust_rule_id: str | None,
+    autonomy_level: str | None,
+) -> dict[str, Any]:
+    values: dict[str, Any] = {
+        "phase": run.phase,
+        "governance": run.governance,
+        "acceptance": run.acceptance,
+        "resolution": run.resolution,
+        "plan_summary": run.plan_summary,
+        "result_summary": run.result_summary,
+        "error": run.error,
+        "trust_rule_id": run.trust_rule_id,
+        "autonomy_level": run.autonomy_level,
+    }
+    candidates = {
+        "phase": phase,
+        "governance": governance,
+        "acceptance": acceptance,
+        "resolution": resolution,
+        "plan_summary": plan_summary,
+        "result_summary": result_summary,
+        "error": error,
+        "trust_rule_id": trust_rule_id,
+        "autonomy_level": autonomy_level,
+    }
+    for k, v in candidates.items():
+        if v is not None:
+            values[k] = v
+    values["updated_at"] = time.time()
+    return values
+
+
 class RunStore(ToolCallLogStoreMixin, ApprovalStoreMixin):
     def __init__(self, home: Path):
         self.home = home
@@ -178,7 +250,7 @@ class RunStore(ToolCallLogStoreMixin, ApprovalStoreMixin):
                 """,
                 (run_id,),
             ).fetchone()
-        return self._run_from_row(row) if row else None
+        return self._run_from_row(row)
 
     def list(self, *, limit: int = 50, offset: int = 0) -> typing.List[Run]:
         with connect(self.db_path) as conn:
@@ -250,10 +322,10 @@ class RunStore(ToolCallLogStoreMixin, ApprovalStoreMixin):
         if kind:
             clauses.append("kind = ?")
             params.append(kind)
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        where = _where_clause(clauses)
         with connect(self.db_path) as conn:
             row = conn.execute(f"SELECT COUNT(*) FROM runs{where}", params).fetchone()
-        return int(row[0] if row else 0)
+        return _int_cell(row)
 
     def count_runs_by_phase(self) -> dict[str, int]:
         with connect(self.db_path) as conn:
@@ -316,7 +388,7 @@ class RunStore(ToolCallLogStoreMixin, ApprovalStoreMixin):
                     settleable.append(row)
                 linked = [row for row in settleable if row[3] == run_id]
                 legacy = [row for row in settleable if row[3] == ""]
-                receipt = linked[-1] if linked else (legacy[0] if len(legacy) == 1 else None)
+                receipt = _select_settleable_receipt(linked, legacy)
                 if receipt is None:
                     continue
                 log_id, ok, error, receipt_run_id, _facts_json = receipt
@@ -334,13 +406,13 @@ class RunStore(ToolCallLogStoreMixin, ApprovalStoreMixin):
                     WHERE id = ? AND phase IN ('pending', 'running')
                     """,
                     (
-                        "accepted" if ok else "rejected",
-                        "success" if ok else "failed",
+                        _ACCEPTANCE_BY_OK[bool(ok)],
+                        _RESOLUTION_BY_OK[bool(ok)],
                         (
                             "approved capability receipt reconciled "
                             f"ok={str(bool(ok)).lower()} tool={tool} audit_log_id={log_id}"
                         ),
-                        "" if ok else (error or "capability_failed"),
+                        _receipt_error(bool(ok), error),
                         time.time(),
                         run_id,
                     ),
@@ -442,7 +514,7 @@ class RunStore(ToolCallLogStoreMixin, ApprovalStoreMixin):
                 f"SELECT COUNT(*) FROM runs WHERE {' AND '.join(clauses)}",
                 params,
             ).fetchone()
-        return int(row[0]) if row else 0
+        return _int_cell(row)
 
     def list_active_workspaces(self) -> set[str]:
         with connect(self.db_path) as conn:
@@ -483,18 +555,18 @@ class RunStore(ToolCallLogStoreMixin, ApprovalStoreMixin):
         run = self.get(run_id)
         if run is None:
             return None
-        values = {
-            "phase": run.phase if phase is None else phase,
-            "governance": run.governance if governance is None else governance,
-            "acceptance": run.acceptance if acceptance is None else acceptance,
-            "resolution": run.resolution if resolution is None else resolution,
-            "plan_summary": run.plan_summary if plan_summary is None else plan_summary,
-            "result_summary": run.result_summary if result_summary is None else result_summary,
-            "error": run.error if error is None else error,
-            "trust_rule_id": run.trust_rule_id if trust_rule_id is None else trust_rule_id,
-            "autonomy_level": run.autonomy_level if autonomy_level is None else autonomy_level,
-            "updated_at": time.time(),
-        }
+        values = _merge_run_updates(
+            run,
+            phase=phase,
+            governance=governance,
+            acceptance=acceptance,
+            resolution=resolution,
+            plan_summary=plan_summary,
+            result_summary=result_summary,
+            error=error,
+            trust_rule_id=trust_rule_id,
+            autonomy_level=autonomy_level,
+        )
         with connect(self.db_path) as conn:
             conn.execute(
                 """
@@ -537,18 +609,18 @@ class RunStore(ToolCallLogStoreMixin, ApprovalStoreMixin):
         run = self._get_with_connection(conn, run_id)
         if run is None:
             return None
-        values = {
-            "phase": run.phase if phase is None else phase,
-            "governance": run.governance if governance is None else governance,
-            "acceptance": run.acceptance if acceptance is None else acceptance,
-            "resolution": run.resolution if resolution is None else resolution,
-            "plan_summary": run.plan_summary if plan_summary is None else plan_summary,
-            "result_summary": run.result_summary if result_summary is None else result_summary,
-            "error": run.error if error is None else error,
-            "trust_rule_id": run.trust_rule_id if trust_rule_id is None else trust_rule_id,
-            "autonomy_level": run.autonomy_level if autonomy_level is None else autonomy_level,
-            "updated_at": time.time(),
-        }
+        values = _merge_run_updates(
+            run,
+            phase=phase,
+            governance=governance,
+            acceptance=acceptance,
+            resolution=resolution,
+            plan_summary=plan_summary,
+            result_summary=result_summary,
+            error=error,
+            trust_rule_id=trust_rule_id,
+            autonomy_level=autonomy_level,
+        )
         conn.execute(
             """
             UPDATE runs
@@ -583,10 +655,12 @@ class RunStore(ToolCallLogStoreMixin, ApprovalStoreMixin):
             """,
             (run_id,),
         ).fetchone()
-        return RunStore._run_from_row(row) if row else None
+        return RunStore._run_from_row(row)
 
     # ------------------------------------------------------------- row mappers
 
     @staticmethod
-    def _run_from_row(row: tuple) -> Run:
+    def _run_from_row(row: tuple | None) -> Run | None:
+        if not row:
+            return None
         return Run(*row)

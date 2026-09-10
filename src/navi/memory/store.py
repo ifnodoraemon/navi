@@ -15,9 +15,40 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from ..db import connect
+from ..json_utils import json_object
 from ..paths import db_paths
 from ..hooks import HookDecision, HookEvent, HookRegistry
 from ..text_utils import truncate_middle
+
+
+def _resolve_now(now: float | None) -> float:
+    if now is not None:
+        return now
+    return time.time()
+
+
+def _effective_param(provided: float | None, fallback: float) -> float:
+    if provided is not None:
+        return provided
+    return fallback
+
+
+def _format_verification_date(ts: float | None) -> str:
+    if not ts:
+        return "unverified"
+    return time.strftime("%Y-%m-%d", time.localtime(ts))
+
+
+def _as_list(val: Any) -> list[Any]:
+    if isinstance(val, list):
+        return val
+    return []
+
+
+def _where_clause(predicates: list[str]) -> str:
+    if not predicates:
+        return ""
+    return f"WHERE {' AND '.join(predicates)}"
 from .models import (
     ACTIVE_MEMORY_CONTEXT_LIMIT,
     ACTIVE_STATUSES,
@@ -142,25 +173,23 @@ class MemoryStore:
 
     def get_parameter(self, name: str, default: float | None = None) -> float:
         self._ensure_parameters()
-        fallback = default if default is not None else DEFAULT_MEMORY_PARAMETERS.get(name, 0.0)
+        fallback = _effective_param(default, DEFAULT_MEMORY_PARAMETERS.get(name, 0.0))
         return float(self._parameters_cache.get(name, fallback))
 
     def get_parameter_entry(self, name: str) -> dict[str, Any] | None:
         self._ensure_parameters()
         entry = self.provider.get_parameter(name)
+        if entry is not None:
+            return {"name": name, "value": entry[0], "updated_at": entry[1], "metadata": entry[2]}
         default_val = DEFAULT_MEMORY_PARAMETERS.get(name)
-        fallback = {
-            "name": name,
-            "value": default_val,
-            "updated_at": 0.0,
-            "metadata": {"reason": "default"},
-        }
-        live = (
-            {"name": name, "value": entry[0], "updated_at": entry[1], "metadata": entry[2]}
-            if entry is not None
-            else fallback
-        )
-        return live if (entry is not None or default_val is not None) else None
+        if default_val is not None:
+            return {
+                "name": name,
+                "value": default_val,
+                "updated_at": 0.0,
+                "metadata": {"reason": "default"},
+            }
+        return None
 
     def set_parameter(
         self,
@@ -414,7 +443,7 @@ class MemoryStore:
         self.provider.delete_item(item_id)
 
     def expire_items(self, *, now: float | None = None, limit: int = 1000) -> dict[str, Any]:
-        current_time = time.time() if now is None else now
+        current_time = _resolve_now(now)
         expired: list[dict[str, str]] = []
         for item in self.list_items(limit=limit):
             is_expired = bool(item.expires_at and item.expires_at <= current_time)
@@ -444,11 +473,9 @@ class MemoryStore:
         """Archive an item and record the item that superseded it."""
         current = self.get_item(item_id)
         replacement = self.get_item(replacement_item_id)
-        return (
-            self._do_supersede(current, replacement, item_id, replacement_item_id, reason)
-            if (current and replacement)
-            else None
-        )
+        if not current or not replacement:
+            return None
+        return self._do_supersede(current, replacement, item_id, replacement_item_id, reason)
 
     def _do_supersede(
         self,
@@ -486,7 +513,7 @@ class MemoryStore:
 
     def garbage_collect(self, *, now: float | None = None, limit: int = 1000) -> dict[str, Any]:
         """Run bounded working-memory GC and return objective facts."""
-        current_time = time.time() if now is None else now
+        current_time = _resolve_now(now)
         expired = self.expire_items(now=now, limit=limit)
         decayed = self.decay_inactive_confidence(now=current_time, limit=limit)
         pruned = self.prune_consolidation_history(now=current_time)
@@ -515,14 +542,13 @@ class MemoryStore:
         now: float | None = None,
         retention_seconds: float | None = None,
     ) -> dict[str, int]:
-        current_time = time.time() if now is None else now
-        effective_retention = (
-            retention_seconds
-            if retention_seconds is not None
-            else self.get_parameter(
+        current_time = _resolve_now(now)
+        effective_retention = _effective_param(
+            retention_seconds,
+            self.get_parameter(
                 "consolidation_history_retention_seconds",
                 MEMORY_CONSOLIDATION_HISTORY_RETENTION_SECONDS,
-            )
+            ),
         )
         cutoff = current_time - effective_retention
         with connect(db_paths(self.home).memory) as conn:
@@ -554,21 +580,18 @@ class MemoryStore:
         negative memories are excluded so durable must/must-not boundaries do not
         silently weaken with age.
         """
-        current_time = time.time() if now is None else now
-        effective_grace = (
-            grace_seconds
-            if grace_seconds is not None
-            else self.get_parameter("decay_grace_seconds", MEMORY_CONFIDENCE_DECAY_GRACE_SECONDS)
+        current_time = _resolve_now(now)
+        effective_grace = _effective_param(
+            grace_seconds,
+            self.get_parameter("decay_grace_seconds", MEMORY_CONFIDENCE_DECAY_GRACE_SECONDS),
         )
-        effective_delta_param = (
-            delta
-            if delta is not None
-            else self.get_parameter("decay_base_delta", MEMORY_CONFIDENCE_DECAY_DELTA)
+        effective_delta_param = _effective_param(
+            delta,
+            self.get_parameter("decay_base_delta", MEMORY_CONFIDENCE_DECAY_DELTA),
         )
-        effective_stale_threshold = (
-            stale_threshold
-            if stale_threshold is not None
-            else self.get_parameter("decay_stale_threshold", MEMORY_CONFIDENCE_DECAY_STALE_THRESHOLD)
+        effective_stale_threshold = _effective_param(
+            stale_threshold,
+            self.get_parameter("decay_stale_threshold", MEMORY_CONFIDENCE_DECAY_STALE_THRESHOLD),
         )
         stability_scale = self.get_parameter("decay_stability_scale", 1.0)
 
@@ -638,17 +661,15 @@ class MemoryStore:
     ) -> MemoryItem | None:
         """Record that a memory item was explicitly used by a planner/tool path."""
         current = self.get_item(item_id)
-        return (
-            self._do_record_activation(
-                current,
-                item_id=item_id,
-                now=now,
-                reason=reason,
-                provenance=provenance,
-                query=query,
-            )
-            if current
-            else None
+        if not current:
+            return None
+        return self._do_record_activation(
+            current,
+            item_id=item_id,
+            now=now,
+            reason=reason,
+            provenance=provenance,
+            query=query,
         )
 
     def _do_record_activation(
@@ -665,7 +686,7 @@ class MemoryStore:
         clean_provenance = provenance.strip()
         (not clean_reason) and _raise(ValueError("activation reason is required"))
         (not clean_provenance) and _raise(ValueError("activation provenance is required"))
-        current_time = time.time() if now is None else now
+        current_time = _resolve_now(now)
         metadata = dict(current.metadata)
         previous_count = _metadata_int(metadata, "recall_count")
         metadata["last_recalled_at"] = current_time
@@ -815,11 +836,7 @@ class MemoryStore:
         }
 
     def restore_item(self, item_dict: dict) -> None:
-        item_dict["metadata"] = (
-            json.loads(item_dict["metadata"])
-            if isinstance(item_dict.get("metadata"), str)
-            else (item_dict.get("metadata") or {})
-        )
+        item_dict["metadata"] = json_object(item_dict.get("metadata"))
         item = MemoryItem(**item_dict)
         # Restoring a memory item (e.g. evolution rollback) is still a memory
         # write and must pass the before_memory_write hook so policy can block
@@ -861,15 +878,15 @@ class MemoryStore:
         can observe or block it. Evolution rollback does not
         call this method because rollback must restore the exact prior record."""
         current = self.get_item(item_id)
-        return self._do_reduce_confidence(current, item_id=item_id, delta=delta) if current else None
+        if not current:
+            return None
+        self._do_reduce_confidence(current, item_id=item_id, delta=delta)
 
     def _do_reduce_confidence(
         self, current: MemoryItem, *, item_id: str, delta: float | None
     ) -> None:
-        effective_delta = (
-            delta
-            if delta is not None
-            else self.get_parameter("confidence_reduction_delta", 0.10)
+        effective_delta = _effective_param(
+            delta, self.get_parameter("confidence_reduction_delta", 0.10)
         )
         new_confidence = max(0.0, current.confidence - effective_delta)
 
@@ -940,17 +957,15 @@ class MemoryStore:
     ) -> list[MemoryRecall]:
         now = time.time()
         fts_query = f"{query} {goal}".strip()
-        return (
-            self._do_recall(
-                fts_query,
-                query=query,
-                limit=limit,
-                goal=goal,
-                allowed_scopes=allowed_scopes,
-                now=now,
-            )
-            if fts_query
-            else []
+        if not fts_query:
+            return []
+        return self._do_recall(
+            fts_query,
+            query=query,
+            limit=limit,
+            goal=goal,
+            allowed_scopes=allowed_scopes,
+            now=now,
         )
 
     def _do_recall(
@@ -1005,14 +1020,12 @@ class MemoryStore:
             item_id for item_id, _score, _reasons in lexical_candidates[:3]
         ]
         fanout = self.get_parameter("graph_fanout_damping", 3.0)
-        graph_neighbors = (
-            self._semantic_graph_neighbors(
+        graph_neighbors = {}
+        if seeds_for_graph:
+            graph_neighbors = self._semantic_graph_neighbors(
                 tuple(seeds_for_graph),
                 limit=max(1, int(limit * fanout)),
             )
-            if seeds_for_graph
-            else {}
-        )
         for item_id, reasons in graph_neighbors.items():
             in_seen = item_id in seen_candidate_ids
             actions = {
@@ -1041,7 +1054,9 @@ class MemoryStore:
             take and self._recent_recall_queries.__setitem__(recalled_item.id, query.strip())
             (len(self._recent_recall_queries) > 500) and self._recent_recall_queries.pop(next(iter(self._recent_recall_queries)))
 
-        conflicts = self.list_conflicts(limit=1000, allowed_scopes=allowed_scopes) if selected else ()
+        conflicts = ()
+        if selected:
+            conflicts = self.list_conflicts(limit=1000, allowed_scopes=allowed_scopes)
         return [self._with_conflict_reasons(recall, conflicts) for recall in selected]
 
     @staticmethod
@@ -1100,8 +1115,9 @@ class MemoryStore:
         limit: int,
     ) -> dict[str, list[str]]:
         graph_db = db_paths(self.home).graph
-        can_query = bool(seed_item_ids and graph_db.exists())
-        return self._do_graph_neighbors(graph_db, seed_item_ids, limit=limit) if can_query else {}
+        if not (seed_item_ids and graph_db.exists()):
+            return {}
+        return self._do_graph_neighbors(graph_db, seed_item_ids, limit=limit)
 
     def _do_graph_neighbors(
         self,
@@ -1121,10 +1137,10 @@ class MemoryStore:
                     WHERE type = 'table' AND name = 'graph_edges'
                     """
                 ).fetchone()
-                return (
-                    self._collect_graph_neighbors(conn, seed_item_ids, limit=limit, cutoff_mult=cutoff_mult)
-                    if has_edges
-                    else {}
+                if not has_edges:
+                    return {}
+                return self._collect_graph_neighbors(
+                    conn, seed_item_ids, limit=limit, cutoff_mult=cutoff_mult
                 )
         except Exception:
             logger.exception("semantic graph neighbor recall failed")
@@ -1147,14 +1163,15 @@ class MemoryStore:
                 """,
                 (seed_id,),
             ).fetchone()
-            bool(seed_node) and self._expand_seed_node(
-                conn,
-                seed_id=seed_id,
-                graph_node_id=str(seed_node[0]) if seed_node else "",
-                limit=limit,
-                cutoff_mult=cutoff_mult,
-                neighbors=neighbors,
-            )
+            if seed_node:
+                self._expand_seed_node(
+                    conn,
+                    seed_id=seed_id,
+                    graph_node_id=str(seed_node[0]),
+                    limit=limit,
+                    cutoff_mult=cutoff_mult,
+                    neighbors=neighbors,
+                )
         return neighbors
 
     def _expand_seed_node(
@@ -1261,11 +1278,7 @@ class MemoryStore:
         lines: list[str] = []
         for recall in recalls:
             item = recall.item
-            verified = (
-                time.strftime("%Y-%m-%d", time.localtime(item.last_verified_at))
-                if item.last_verified_at
-                else "unverified"
-            )
+            verified = _format_verification_date(item.last_verified_at)
             reasons = ", ".join(recall.reasons)
             reason_line = f"\n  reasons: {reasons}" * int(bool(reasons))
             lines.append(
@@ -1318,7 +1331,7 @@ class MemoryStore:
         )
         entries = [
             f"- [scope={item.scope} confidence={item.confidence:.2f} "
-            f"source={item.source} verified={(time.strftime('%Y-%m-%d', time.localtime(item.last_verified_at)) if item.last_verified_at else 'unverified')} id={item.id}] {item.content}"
+            f"source={item.source} verified={_format_verification_date(item.last_verified_at)} id={item.id}] {item.content}"
             for item in constraints
         ]
         header = ["Durable constraints (reloaded from governed memory; always in effect):"] * int(bool(entries))
@@ -1336,7 +1349,9 @@ class MemoryStore:
         """
         from ..lifecycle import Phase as _GoalPhase  # local import to avoid cycle
 
-        goals = goal_store.list(limit=limit) if goal_store is not None else []
+        goals = []
+        if goal_store is not None:
+            goals = goal_store.list(limit=limit)
         active = [g for g in goals if g.phase == str(_GoalPhase.RUNNING)]
         entries = [
             f"- [goal_id={g.id} phase={g.phase} run_id={g.run_id}] "
@@ -1361,7 +1376,9 @@ class MemoryStore:
     def set_session_alias(self, alias: str, session_id: str) -> SessionAlias:
         now = time.time()
         existing = self.get_session_alias(alias)
-        created_at = existing.created_at if existing else now
+        created_at = now
+        if existing:
+            created_at = existing.created_at
         self.provider.set_session_alias(alias, session_id, created_at, now)
         return self.get_session_alias(alias) or SessionAlias(alias, session_id, created_at, now)
 
@@ -1370,7 +1387,9 @@ class MemoryStore:
 
     def current_session_id(self, alias: str) -> str:
         current = self.get_session_alias(alias)
-        return current.session_id if current else self.create_session(alias=alias)
+        if current:
+            return current.session_id
+        return self.create_session(alias=alias)
 
     def rotate_session(self, alias: str) -> SessionAlias:
         return self.set_session_alias(alias, self.new_session_id())
@@ -1482,7 +1501,9 @@ class MemoryStore:
                 "SELECT id FROM memory_consolidation_jobs WHERE session_id = ? AND run_id = ?",
                 (session_id, run_id),
             ).fetchone()
-        return str(row[0]) if row else job_id
+        if row:
+            return str(row[0])
+        return job_id
 
     def enqueue_unconsolidated_episodes(self, limit: int = 20) -> list[str]:
         """System consolidation sweep: discover past episodic conversations that have not yet
@@ -1534,7 +1555,7 @@ class MemoryStore:
         for active, clause, val in filters:
             active and predicates.append(clause)
             active and params.append(val)
-        where = f"WHERE {' AND '.join(predicates)}" if predicates else ""
+        where = _where_clause(predicates)
         params.append(max(1, min(int(limit), 500)))
         with connect(db_paths(self.home).memory) as conn:
             rows = conn.execute(
@@ -1559,7 +1580,7 @@ class MemoryStore:
         (not ids) and _raise(ValueError("memory consolidation retry requires job_ids"))
         normalized_reason = str(reason or "").strip()
         (not normalized_reason) and _raise(ValueError("memory consolidation retry requires reason"))
-        current_time = time.time() if now is None else now
+        current_time = _resolve_now(now)
         retried: list[str] = []
         with connect(db_paths(self.home).memory) as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -1569,7 +1590,9 @@ class MemoryStore:
                     (job_id,),
                 ).fetchone()
                 is_dead = row is not None and str(row[0]) == "dead_letter"
-                previous_error = str(row[1] or "") if is_dead else ""
+                previous_error = ""
+                if is_dead:
+                    previous_error = str(row[1] or "")
                 updated = is_dead and conn.execute(
                     """
                     UPDATE memory_consolidation_jobs
@@ -1591,7 +1614,9 @@ class MemoryStore:
                     created_at=current_time,
                 )
                 was_updated and retried.append(job_id)
-            return self._fetch_retried_jobs(conn, retried) if retried else []
+            if not retried:
+                return []
+            return self._fetch_retried_jobs(conn, retried)
 
     @staticmethod
     def _fetch_retried_jobs(conn: sqlite3.Connection, retried: list[str]) -> list[MemoryConsolidationJob]:
@@ -1638,12 +1663,10 @@ class MemoryStore:
         lease_seconds: float = 300.0,
         now: float | None = None,
     ) -> list[MemoryConsolidationJob]:
-        current_time = time.time() if now is None else now
-        effective_lease = (
-            lease_seconds
-            if lease_seconds != 300.0
-            else self.get_parameter("consolidation_lease_seconds", 300.0)
-        )
+        current_time = _resolve_now(now)
+        effective_lease = lease_seconds
+        if lease_seconds == 300.0:
+            effective_lease = self.get_parameter("consolidation_lease_seconds", 300.0)
         with connect(db_paths(self.home).memory) as conn:
             conn.execute("BEGIN IMMEDIATE")
             legacy_failed = conn.execute(
@@ -1703,7 +1726,9 @@ class MemoryStore:
                     reason={"active": "lease_reclaimed"}.get(str(previous_status), "worker_claim"),
                     created_at=current_time,
                 )
-            return self._fetch_claimed_jobs(conn, ids) if ids else []
+            if not ids:
+                return []
+            return self._fetch_claimed_jobs(conn, ids)
 
     @staticmethod
     def _fetch_claimed_jobs(conn: sqlite3.Connection, ids: list[str]) -> list[MemoryConsolidationJob]:
@@ -1724,11 +1749,10 @@ class MemoryStore:
         from .scopes import default_memory_scope
 
         messages = self.get_messages_for_run(job.session_id, job.run_id, limit=50) or self.get_messages(job.session_id, limit=50)
-        return (
-            await self._run_consolidation(job, runtime, messages)
-            if messages
-            else (self._finish_consolidation_job(job, status="completed"), [])[1]
-        )
+        if not messages:
+            self._finish_consolidation_job(job, status="completed")
+            return []
+        return await self._run_consolidation(job, runtime, messages)
 
     async def _run_consolidation(
         self,
@@ -1796,9 +1820,11 @@ class MemoryStore:
                 output_schema=output_schema,
             )
             data = json.loads(response)
-            learnings = data.get("learnings") if isinstance(data, dict) else []
+            learnings = []
+            if isinstance(data, dict):
+                learnings = _as_list(data.get("learnings"))
             affected = self._apply_learnings(
-                learnings if isinstance(learnings, list) else [],
+                learnings,
                 active_items,
                 source=job.source or "conversation",
                 provenance=f"memory-job:{job.id}:run:{job.run_id}",
@@ -1931,10 +1957,11 @@ class MemoryStore:
             "revoke": _apply_learning_revoke,
         }
         for learning in learnings:
-            is_dict = isinstance(learning, dict)
-            action = str(learning.get("action", "") if is_dict else "").strip().lower()
+            if not isinstance(learning, dict):
+                continue
+            action = str(learning.get("action", "")).strip().lower()
             handler = learning_action_handlers.get(action, lambda _: None)
-            is_dict and handler(learning)
+            handler(learning)
         return affected_items
 
     def _apply_add_learning(
@@ -1952,22 +1979,19 @@ class MemoryStore:
         content = str(learning.get("content", "")).strip()
         is_valid_type = bool(content and m_type in LEARNABLE_MEMORY_TYPES)
         memory_key = (m_type, content.lower())
-        is_new = is_valid_type and (memory_key not in existing_by_key)
-        return (
-            self._insert_add_learning(
-                learning,
-                existing_by_key,
-                memory_key=memory_key,
-                m_type=m_type,
-                content=content,
-                visible_item_ids=visible_item_ids,
-                source=source,
-                provenance=provenance,
-                default_add_reason=default_add_reason,
-                scope=scope,
-            )
-            if is_new
-            else None
+        if not (is_valid_type and (memory_key not in existing_by_key)):
+            return None
+        return self._insert_add_learning(
+            learning,
+            existing_by_key,
+            memory_key=memory_key,
+            m_type=m_type,
+            content=content,
+            visible_item_ids=visible_item_ids,
+            source=source,
+            provenance=provenance,
+            default_add_reason=default_add_reason,
+            scope=scope,
         )
 
     def _insert_add_learning(
@@ -1995,10 +2019,12 @@ class MemoryStore:
         ema_conf = round((1.0 - alpha) * default_conf + alpha * conf_val, 4)
         self.set_parameter("consolidation_default_confidence", ema_conf, reason="consolidation_model_ema")
 
-        raw_contradicts = learning.get("contradicts", [])
-        contradicts_list = raw_contradicts if isinstance(raw_contradicts, list) else []
+        contradicts_list = _as_list(learning.get("contradicts", []))
         contradicts = [str(item_id) for item_id in contradicts_list if str(item_id) in visible_item_ids]
         promoted_status = "proposed"
+        metadata = {}
+        if contradicts:
+            metadata = {"contradicts": contradicts}
         new_item = self.add_item(
             memory_type=m_type,
             content=content,
@@ -2006,7 +2032,7 @@ class MemoryStore:
             scope=scope,
             status=promoted_status,
             confidence=conf_val,
-            metadata={"contradicts": contradicts} if contradicts else {},
+            metadata=metadata,
             reason=str(learning.get("reason") or default_add_reason),
             provenance=provenance,
         )
@@ -2047,8 +2073,15 @@ def _blocking_hook(decisions: list[HookDecision]) -> HookDecision | None:
     return next((decision for decision in decisions if decision.decision == "block"), None)
 
 
+def _clean_str_item(val: str) -> list[str]:
+    s = val.strip()
+    if s:
+        return [s]
+    return []
+
+
 _METADATA_ID_EXTRACTORS: dict[type, Any] = {
-    str: lambda val: [val.strip()] if val.strip() else [],
+    str: _clean_str_item,
     list: lambda val: [str(item).strip() for item in val if str(item).strip()],
 }
 

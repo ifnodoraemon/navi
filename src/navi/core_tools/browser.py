@@ -110,19 +110,27 @@ def _browser_screenshot(args: dict[str, Any], *, project_dir: Path) -> ToolResul
         network_allowed=True,
     )
     ok = result["exit_code"] == 0 and output.exists()
+    error = result["stderr"]
+    if ok:
+        error = ""
+    transition = {True: "written", False: "failed"}[ok]
+    output_exists = output.exists()
+    size = 0
+    if output_exists:
+        size = output.stat().st_size
     return ToolResult(
         tool="browser.screenshot",
         ok=ok,
-        error="" if ok else result["stderr"],
+        error=error,
         facts={
             "entity_type": "file",
             "entity_id": str(output),
-            "state_transition": "written" if ok else "failed",
+            "state_transition": transition,
             "turn_scope": "current",
             **result,
             "url": url,
             "path": str(output),
-            "exists": output.exists(),
-            "size": output.stat().st_size if output.exists() else 0,
+            "exists": output_exists,
+            "size": size,
         },
     )

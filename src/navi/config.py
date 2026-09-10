@@ -250,20 +250,17 @@ def load_config(home: Path | None = None) -> NaviConfig:
         port=_port(api_raw.get("port", DEFAULT_API_PORT), "api.port"),
         api_key=str(api_raw.get("api_key") or "").strip(),
     )
-    search_providers_raw = _mapping(search_raw.get("providers"), "search.providers")
-    search = SearchConfig(
-        providers=(
-            {
-                _search_provider_name(name): _search_provider_config(
-                    _mapping(item, f"search.providers.{name}"),
-                    path=f"search.providers.{name}",
-                )
-                for name, item in search_providers_raw.items()
-            }
-            if "providers" in search_raw
-            else _default_search_providers()
-        )
-    )
+    search_providers = _default_search_providers()
+    if "providers" in search_raw:
+        search_providers_raw = _mapping(search_raw.get("providers"), "search.providers")
+        search_providers = {
+            _search_provider_name(name): _search_provider_config(
+                _mapping(item, f"search.providers.{name}"),
+                path=f"search.providers.{name}",
+            )
+            for name, item in search_providers_raw.items()
+        }
+    search = SearchConfig(providers=search_providers)
     connectors = _default_connectors()
     for name, item in connectors_raw.items():
         connector_name = str(name)
@@ -272,12 +269,13 @@ def load_config(home: Path | None = None) -> NaviConfig:
             **connectors.get(connector_name, {}),
             **connector_raw,
         }
-    mcp_servers_raw = _mapping(mcp_raw.get("servers"), "mcp.servers")
-    mcp_servers = (
-        {str(name): _mapping(item, f"mcp.servers.{name}") for name, item in mcp_servers_raw.items()}
-        if "servers" in mcp_raw
-        else _default_mcp_servers()
-    )
+    mcp_servers = _default_mcp_servers()
+    if "servers" in mcp_raw:
+        mcp_servers_raw = _mapping(mcp_raw.get("servers"), "mcp.servers")
+        mcp_servers = {
+            str(name): _mapping(item, f"mcp.servers.{name}")
+            for name, item in mcp_servers_raw.items()
+        }
     unknown_mcp = sorted(set(mcp_raw) - {"servers"})
     if unknown_mcp:
         raise ValueError(f"unsupported mcp config fields: {', '.join(unknown_mcp)}")
@@ -537,7 +535,7 @@ def validate_config(config: NaviConfig, home: Path) -> list[str]:
                 f"{path}.response_transport '{m.response_transport}' is unsupported; "
                 "expected json or sse"
             )
-        elif m.response_transport == "sse" and kind != "openai-compatible":
+        if m.response_transport == "sse" and kind != "openai-compatible":
             errors.append(
                 f"{path}.response_transport 'sse' requires kind 'openai-compatible'"
             )

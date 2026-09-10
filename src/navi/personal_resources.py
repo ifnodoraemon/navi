@@ -258,7 +258,9 @@ class PersonalResourceStore:
                 """,
                 (resource_id, *sorted(owner_scopes)),
             ).fetchone()
-        return _resource_from_row(row) if row else None
+        if not row:
+            return None
+        return _resource_from_row(row)
 
     def query(
         self,

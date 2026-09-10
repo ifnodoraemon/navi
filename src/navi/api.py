@@ -229,7 +229,9 @@ def _register_middleware(app: FastAPI, *, api_key: str) -> None:
             )
         status_code = response.status_code
         is_success = bool(200 <= status_code < 300)
-        detail = parsed.get("detail") if isinstance(parsed, dict) else parsed
+        detail = parsed
+        if isinstance(parsed, dict):
+            detail = parsed.get("detail")
         envelope_builders = {
             True: lambda: {"ok": True, "data": parsed, "error": None},
             False: lambda: {
@@ -270,12 +272,15 @@ def _health_response(home: Path, connector_adapters) -> dict | JSONResponse:
             issues.append(
                 {"component": f"connector.{adapter.name}", "status": connector_status}
             )
+    runtime_status = "healthy"
+    if runtime_error:
+        runtime_status = "unavailable"
     payload = {
         "ok": not issues,
         "home": str(home),
         "model_provider": config.model.provider,
         "runtime": {
-            "status": "healthy" if not runtime_error else "unavailable",
+            "status": runtime_status,
             "error": runtime_error,
         },
         "connectors": connectors,
@@ -403,12 +408,15 @@ def create_app(
                 workspace=str(project_dir),
             ),
         )
-        task = task_store.get(result.run_id) if result.run_id else None
+        task = None
+        if result.run_id:
+            task = task_store.get(result.run_id)
+        delegation = getattr(task, "__dict__", None)
         return {
             "message": _local_result_message(
                 result, source=load_config(home).runtime.local_surface
             ),
-            "delegation": task.__dict__ if task else None,
+            "delegation": delegation,
             "facts": result.facts or {},
         }
 
@@ -702,7 +710,7 @@ def _register_state_routes(
         args = request.model_dump(exclude_none=True)
         args["goal_id"] = goal_id
         goal = goal_store.get(goal_id)
-        workspace = goal.workspace if goal is not None else str(project_dir)
+        workspace = getattr(goal, "workspace", str(project_dir))
         context = _local_capability_context(home, project_dir=project_dir, workspace=workspace)
         result = await api_capabilities.invoke(
             "goal.cancel",
@@ -716,7 +724,7 @@ def _register_state_routes(
     @app.get(api_path("goal_state"))
     async def goal_state(goal_id: str) -> dict:
         goal = goal_store.get(goal_id)
-        workspace = goal.workspace if goal is not None else str(project_dir)
+        workspace = getattr(goal, "workspace", str(project_dir))
         context = _local_capability_context(home, project_dir=project_dir, workspace=workspace)
         result = await api_capabilities.invoke(
             "goal.state",
@@ -741,10 +749,8 @@ def _register_state_routes(
         return {
             "proposals": [
                 p.__dict__
-                for p in proposals  # type: ignore[union-attr]
+                for p in (proposals or [])  # type: ignore[union-attr]
             ]
-            if proposals
-            else []
         }
 
     @app.post(api_path("evolution_proposals"))

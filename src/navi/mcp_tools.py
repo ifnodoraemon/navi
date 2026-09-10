@@ -69,7 +69,9 @@ def parse_mcp_config(config: NaviConfig, *, path: Path) -> MCPConfigReport:
             errors.append(f"{item_path} has unsupported fields: {', '.join(unknown_fields)}")
             continue
         url = str(item.get("url") or "").strip()
-        transport = str(item.get("transport") or ("streamable_http" if url else "stdio"))
+        default_transport_map = {True: "streamable_http", False: "stdio"}
+        default_transport = default_transport_map[bool(url)]
+        transport = str(item.get("transport") or default_transport)
         try:
             server = MCPServerConfig(
                 name=namespace,
@@ -263,13 +265,15 @@ async def _call_server_tool(server: MCPServerConfig, args: dict[str, Any]) -> To
             "truncated": result["truncated"],
         },
     }
+    error_message = ""
     if not result["ok"]:
         facts[CAPABILITY_ERROR_REASON_KEY] = "mcp_tool_error"
         facts[CAPABILITY_RETRYABLE_KEY] = False
+        error_message = "MCP server reported a tool error"
     return ToolResult(
         tool=f"mcp.{server.name}.call",
         ok=bool(result["ok"]),
-        error="MCP server reported a tool error" if not result["ok"] else "",
+        error=error_message,
         facts=facts,
     )
 
@@ -280,13 +284,11 @@ def _mcp_failure(
     exc: MCPTransportError,
 ) -> ToolResult:
     info = exc.facts
-    reason = (
-        "mcp_timeout"
-        if info.timed_out
-        else "mcp_http_error"
-        if info.status_code
-        else "mcp_transport_error"
-    )
+    reason = "mcp_transport_error"
+    if info.status_code:
+        reason = "mcp_http_error"
+    if info.timed_out:
+        reason = "mcp_timeout"
     facts: dict[str, Any] = {
         CAPABILITY_ERROR_REASON_KEY: reason,
         CAPABILITY_RETRYABLE_KEY: info.retryable,
@@ -298,8 +300,10 @@ def _mcp_failure(
     }
     if info.status_code:
         facts["status_code"] = info.status_code
+    tool_suffix_map = {True: "call", False: "tools"}
+    tool_suffix = tool_suffix_map[bool(tool_name)]
     return ToolResult(
-        tool=f"mcp.{server.name}.call" if tool_name else f"mcp.{server.name}.tools",
+        tool=f"mcp.{server.name}.{tool_suffix}",
         ok=False,
         error=info.message,
         facts=facts,

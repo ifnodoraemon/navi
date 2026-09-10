@@ -33,7 +33,9 @@ class AuthInspector:
                 False,
                 f"binary not found: {spec.binary}",
             )
-        version = _command_output([binary_path, *spec.version_args]) if spec.version_args else ""
+        version = ""
+        if spec.version_args:
+            version = _command_output([binary_path, *spec.version_args])
         authenticated = any(Path(path).expanduser().exists() for path in spec.auth_files)
         detail = spec.auth_detail
         if spec.auth_status_args:
@@ -60,7 +62,9 @@ def _command_output(command: list[str], *, include_returncode: bool = False) -> 
     try:
         result = subprocess.run(command, check=False, capture_output=True, text=True, timeout=3)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return f"error={exc.__class__.__name__}" if include_returncode else ""
+        if include_returncode:
+            return f"error={exc.__class__.__name__}"
+        return ""
     output = " ".join((result.stdout or result.stderr or "").split())
     if include_returncode:
         return f"returncode={result.returncode} {output}".strip()

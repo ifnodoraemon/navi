@@ -122,8 +122,10 @@ class TelegramClient:
             )
             response.raise_for_status()
             payload = response.json()
-        result = payload.get("result") or {}
-        return str(result.get("file_path") or "") if isinstance(result, dict) else ""
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            return ""
+        return str(result.get("file_path") or "")
 
     def _url(self, method: str) -> str:
         return f"{self.api_base_url}/bot{self.bot_token}/{method}"
@@ -222,11 +224,15 @@ def _coerce_int(value: object) -> int:
         return 0
 
 
+def _clean_char(ch: str) -> str:
+    if ch.isprintable() and ch not in '<>:"|?*':
+        return ch
+    return "_"
+
+
 def _sanitize_attachment_name(name: str, *, fallback: str) -> str:
     base = str(name or "").replace("\\", "/").split("/")[-1]
-    cleaned = "".join(
-        ch if ch.isprintable() and ch not in '<>:"|?*' else "_" for ch in base
-    ).strip(" .")
+    cleaned = "".join(_clean_char(ch) for ch in base).strip(" .")
     cleaned = cleaned[:150]
     cleaned = re.sub(r"\s+", "_", cleaned)
     return cleaned or fallback

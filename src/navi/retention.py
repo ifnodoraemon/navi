@@ -47,7 +47,9 @@ class DataRetentionManager:
         TraceStore(home)
 
     def compact_expired(self, *, now: float | None = None) -> RetentionFacts:
-        current_time = time.time() if now is None else now
+        current_time = now
+        if current_time is None:
+            current_time = time.time()
         candidates = self._expired_transient_runs(current_time)
         compacted: list[str] = []
         deferred = 0
@@ -61,7 +63,8 @@ class DataRetentionManager:
                     reason="transient_wait_retention_expired",
                 )
                 item["terminal_state"] = "cancelled"
-            elif terminal_state not in {
+                terminal_state = "cancelled"
+            if terminal_state not in {
                 "converged",
                 "blocked",
                 "failed",
@@ -103,9 +106,15 @@ class DataRetentionManager:
                 spec = json.loads(str(spec_json))
             except json.JSONDecodeError:
                 continue
-            goal = spec.get("goal") if isinstance(spec, dict) else None
-            metadata = goal.get("metadata") if isinstance(goal, dict) else None
-            profile = metadata.get("execution_profile") if isinstance(metadata, dict) else None
+            if not isinstance(spec, dict):
+                continue
+            goal = spec.get("goal")
+            if not isinstance(goal, dict):
+                continue
+            metadata = goal.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+            profile = metadata.get("execution_profile")
             if not isinstance(profile, dict) or profile.get("persistence") != "transient_audit":
                 continue
             try:
@@ -161,7 +170,10 @@ class DataRetentionManager:
                 "SELECT run_id FROM goals WHERE id = ?",
                 (goal_id,),
             ).fetchone()
-        return str(row[0]) if row else ""
+        ret_val = ""
+        if row:
+            ret_val = str(row[0])
+        return ret_val
 
     def _compact_one(
         self,

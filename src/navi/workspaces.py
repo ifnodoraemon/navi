@@ -228,7 +228,9 @@ class ShadowWorkspaceManager:
                 f"SELECT {SHADOW_WORKSPACES_TABLE.select_list} FROM shadow_workspaces WHERE run_id = ?",
                 (run_id,),
             ).fetchone()
-        return ShadowWorkspaceRecord(*row) if row else None
+        if not row:
+            return None
+        return ShadowWorkspaceRecord(*row)
 
     def durable_workspace_for(
         self,
@@ -276,7 +278,9 @@ class ShadowWorkspaceManager:
         if real_workspace:
             clauses.append("real_workspace = ?")
             params.append(str(Path(real_workspace).expanduser().resolve()))
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        where = ""
+        if clauses:
+            where = f" WHERE {' AND '.join(clauses)}"
         query = (
             f"SELECT {SHADOW_WORKSPACES_TABLE.select_list} FROM shadow_workspaces"
             f"{where} ORDER BY updated_at DESC LIMIT ?"
@@ -291,7 +295,8 @@ class ShadowWorkspaceManager:
         if record is None:
             raise KeyError(f"shadow workspace not found: {run_id}")
         result = self.merge_back(record.to_shadow())
-        status = "conflicted" if result.status == MergeStatus.CONFLICTED else "merged"
+        status_map = {True: "conflicted", False: "merged"}
+        status = status_map[result.status == MergeStatus.CONFLICTED]
         self._set_status(run_id, status)
         if status == "merged":
             self._remove_shadow_artifacts(record)
@@ -437,7 +442,8 @@ class ShadowWorkspaceManager:
         finally:
             if backup_dir.exists():
                 shutil.rmtree(backup_dir)
-        return MergeResult(status=MergeStatus.CLEAN if applied else MergeStatus.NO_OP)
+        merge_status_map = {True: MergeStatus.CLEAN, False: MergeStatus.NO_OP}
+        return MergeResult(status=merge_status_map[bool(applied)])
 
     def _set_status(self, run_id: str, status: str) -> None:
         with connect(self.db_path) as conn:
@@ -587,7 +593,9 @@ class WorkspaceLockStore:
         resource: str = "",
         now: float | None = None,
     ) -> tuple[WorkspaceLock, ...]:
-        current = time.time() if now is None else now
+        current = now
+        if current is None:
+            current = time.time()
         query_map = {
             True: (
                 """
@@ -718,7 +726,8 @@ def _restore_real_files(
         if backup.is_symlink():
             dest.parent.mkdir(parents=True, exist_ok=True)
             os.symlink(os.readlink(backup), dest)
-        elif backup.exists():
+            continue
+        if backup.exists():
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(backup, dest)
 
@@ -726,7 +735,8 @@ def _restore_real_files(
 def _remove_path(path: Path) -> None:
     if path.is_symlink() or path.is_file():
         path.unlink()
-    elif path.exists():
+        return
+    if path.exists():
         shutil.rmtree(path)
 
 

@@ -73,9 +73,10 @@ class _CorrectedTerminalResponseProvider:
     async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
         if role == "planner":
             self.planner_calls += 1
-            message = (
-                "I need to stop here." if self.planner_calls == 1 else "The verified answer is 42."
-            )
+            messages_map = {
+                1: "I need to stop here.",
+            }
+            message = messages_map.get(self.planner_calls, "The verified answer is 42.")
             return json.dumps(
                 {
                     "syscalls": [
@@ -90,14 +91,15 @@ class _CorrectedTerminalResponseProvider:
             )
         if role == "checker":
             self.checker_calls += 1
+            passed = self.checker_calls == 2
+            evidence_map = {
+                True: "the objective is complete",
+                False: "the objective is not complete",
+            }
             return json.dumps(
                 {
-                    "passed": self.checker_calls == 2,
-                    "evidence_summary": (
-                        "the objective is complete"
-                        if self.checker_calls == 2
-                        else "the objective is not complete"
-                    ),
+                    "passed": passed,
+                    "evidence_summary": evidence_map[passed],
                 }
             )
         raise AssertionError(f"unexpected role: {role}")

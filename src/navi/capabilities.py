@@ -82,6 +82,14 @@ def _capability_approval_reason(risk, name: str) -> str:
     return ": ".join(parts)
 
 
+def _audit_error_text(result: CapabilityResult) -> str:
+    from .safeguards import redact_personal_data
+
+    if result.ok:
+        return ""
+    return redact_personal_data(result.message or result.error_reason)
+
+
 class CapabilityRegistry:
     """Agent OS syscall table.
 
@@ -165,7 +173,7 @@ class CapabilityRegistry:
                     mutates=spec.mutates,
                     input_schema=spec.input_schema,
                     output_schema=spec.output_schema,
-                    provider="tool_gateway" if isinstance(handler, ToolCapability) else "action",
+                    provider={True: "tool_gateway", False: "action"}[isinstance(handler, ToolCapability)],
                     description=spec.description,
                     side_effect_policy=spec.side_effect_policy.to_dict(),
                     permission_policy=spec.permission_policy,
@@ -189,7 +197,7 @@ class CapabilityRegistry:
 
     def get(self, name: str) -> ToolSpec | None:
         handler = self.handlers.get(name)
-        return handler.spec if handler else None
+        return getattr(handler, "spec", None)
 
     async def invoke(
         self,
@@ -255,10 +263,8 @@ class CapabilityRegistry:
         workspace_facts = workspace_boundary_facts(
             handler.spec,
             call_args,
-            workspace=(
-                context.workspace
-                if handler.spec.workspace_scope == "context"
-                else str(self.gateway.project_dir)
+            workspace={"context": context.workspace}.get(
+                handler.spec.workspace_scope, str(self.gateway.project_dir)
             ),
         )
         if not workspace_facts["allowed"]:
@@ -279,11 +285,9 @@ class CapabilityRegistry:
             )
         try:
             preflight = getattr(handler, "preflight", None)
-            preflight_result = (
-                await preflight(call_args, permission=permission, context=context)
-                if callable(preflight)
-                else None
-            )
+            preflight_result = None
+            if callable(preflight):
+                preflight_result = await preflight(call_args, permission=permission, context=context)
         except Exception as exc:
             logger.exception("Capability preflight failed for %s", name)
             return _capability_error(
@@ -298,17 +302,16 @@ class CapabilityRegistry:
             handler.spec,
             call_args,
         )
-        approval_permission = (
-            permission
-            if permission_allows(effective_required_permission, permission)
-            else effective_required_permission
-        )
+        approval_permission = effective_required_permission
+        if permission_allows(effective_required_permission, permission):
+            approval_permission = permission
         ceiling_exceeded = not permission_allows(
             approval_permission,
             actual_ceiling,
         )
-        ceiling_risk = (
-            CapabilityRiskAssessment(
+        ceiling_risk = None
+        if ceiling_exceeded:
+            ceiling_risk = CapabilityRiskAssessment(
                 risk_class="high",
                 sensitive_contexts=("permission_ceiling",),
                 confirmation_required=True,
@@ -320,9 +323,6 @@ class CapabilityRegistry:
                     "permission_ceiling": actual_ceiling,
                 },
             )
-            if ceiling_exceeded
-            else None
-        )
         approval_risk, approved_approval_id = self._approval_state_for_call(
             handler.spec,
             name,
@@ -628,13 +628,13 @@ class CapabilityRegistry:
             run.id,
             phase=Phase.ENDED,
             governance=Governance.APPROVED,
-            acceptance=Acceptance.ACCEPTED if result.ok else Acceptance.REJECTED,
-            resolution=Resolution.SUCCESS if result.ok else Resolution.FAILED,
+            acceptance={True: Acceptance.ACCEPTED, False: Acceptance.REJECTED}[bool(result.ok)],
+            resolution={True: Resolution.SUCCESS, False: Resolution.FAILED}[bool(result.ok)],
             result_summary=(
                 f"approved capability completed ok={str(result.ok).lower()} "
                 f"action={result.action}"
             ),
-            error="" if result.ok else (result.error_reason or "capability_failed"),
+            error={True: "", False: result.error_reason or "capability_failed"}[bool(result.ok)],
         )
 
     def _approval_state_for_call(
@@ -656,10 +656,8 @@ class CapabilityRegistry:
         risk = assess_capability_call(
             spec,
             call_args,
-            workspace=(
-                context.workspace
-                if spec.workspace_scope == "context"
-                else str(self.gateway.project_dir)
+            workspace={"context": context.workspace}.get(
+                spec.workspace_scope, str(self.gateway.project_dir)
             ),
         )
         if required_risk is not None and (
@@ -687,7 +685,9 @@ class CapabilityRegistry:
             ),
         }
         approved = lookup_strategies[bool(self.governed_run_id)]()
-        return (None, approved.id) if approved is not None else (risk, "")
+        if approved is not None:
+            return None, approved.id
+        return risk, ""
 
     def _suspend_turn_for_sensitive_approval(
         self,
@@ -852,9 +852,9 @@ class CapabilityRegistry:
     ) -> CapabilityResult:
         runs = RunStore(self.home)
         run = runs.get(self.governed_run_id or "")
-        source = context.source or (run.source if run else "")
-        peer_id = context.peer_id or (run.peer_id if run else "")
-        sender_id = context.sender_id or (run.sender_id if run else "")
+        source = context.source or getattr(run, "source", "")
+        peer_id = context.peer_id or getattr(run, "peer_id", "")
+        sender_id = context.sender_id or getattr(run, "sender_id", "")
         args_json = _canonical_args_json(call_args, home=self.home)
         approval = runs.pending_approval_for_run(
             self.governed_run_id or "",
@@ -951,7 +951,7 @@ class CapabilityRegistry:
         audit_run_id = self.governed_run_id or context.loop_run_id
         if not audit_run_id and context.approved_approval_id:
             approval = runs.get_approval(context.approved_approval_id)
-            audit_run_id = approval.run_id if approval is not None else ""
+            audit_run_id = getattr(approval, "run_id", "")
         log = runs.add_tool_call_log(
             tool=spec.name,
             args_json=json.dumps(
@@ -976,7 +976,7 @@ class CapabilityRegistry:
         log_id: str,
         result: CapabilityResult,
     ) -> None:
-        from .safeguards import redact_personal_data, redact_personal_data_deep
+        from .safeguards import redact_personal_data_deep
 
         facts = result.facts or {
             "action": result.action,
@@ -991,9 +991,7 @@ class CapabilityRegistry:
                 ensure_ascii=False,
                 sort_keys=True,
             ),
-            error=(
-                "" if result.ok else redact_personal_data(result.message or result.error_reason)
-            ),
+            error=_audit_error_text(result),
             ended_at=time.time(),
         )
 
@@ -1011,7 +1009,7 @@ class CapabilityRegistry:
             "terminal": result.terminal,
         }
         try:
-            from .safeguards import redact_personal_data, redact_personal_data_deep
+            from .safeguards import redact_personal_data_deep
 
             RunStore(self.home).add_tool_call_log(
                 tool=spec.name,
@@ -1022,9 +1020,7 @@ class CapabilityRegistry:
                 facts_json=json.dumps(
                     redact_personal_data_deep(facts), ensure_ascii=False, sort_keys=True
                 ),
-                error=(
-                    "" if result.ok else redact_personal_data(result.message or result.error_reason)
-                ),
+                error=_audit_error_text(result),
                 started_at=started_at,
                 ended_at=time.time(),
                 run_id=self.governed_run_id or "",

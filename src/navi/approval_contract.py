@@ -26,11 +26,14 @@ def owned_approval_gate_id(evidence: dict[str, Any]) -> str:
     Only the capability result's own approval request establishes that the
     current LoopRun may remain at an approval gate.
     """
-    for container in (
-        evidence,
-        evidence.get("capability_result") if isinstance(evidence, dict) else None,
-        evidence.get("executor") if isinstance(evidence, dict) else None,
-    ):
+    containers: list[Any] = []
+    if isinstance(evidence, dict):
+        containers = [
+            evidence,
+            evidence.get("capability_result"),
+            evidence.get("executor"),
+        ]
+    for container in containers:
         if not isinstance(container, dict):
             continue
         facts = container.get("facts")

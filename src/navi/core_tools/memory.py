@@ -34,13 +34,14 @@ def _memory_recall_facts(recall) -> dict[str, Any]:
 
 
 def _memory_conflict_facts(conflict) -> dict[str, Any]:
+    conflicting_item_facts = None
+    if conflict.conflicting_item:
+        conflicting_item_facts = _memory_item_facts(conflict.conflicting_item)
     return {
         "item": _memory_item_facts(conflict.item),
         "relation": conflict.relation,
         "conflicting_item_id": conflict.conflicting_item_id,
-        "conflicting_item": _memory_item_facts(conflict.conflicting_item)
-        if conflict.conflicting_item
-        else None,
+        "conflicting_item": conflicting_item_facts,
         "status": conflict.status,
         "reason": conflict.reason,
     }
@@ -74,11 +75,9 @@ def _memory_list(home: Path, args: dict[str, Any]) -> ToolResult:
 
 def _memory_recall(home: Path, args: dict[str, Any]) -> ToolResult:
     query = str(args.get("query") or "").strip()
-    return (
-        ToolResult(tool="memory.recall", ok=False, error="query is required")
-        if not query
-        else _execute_memory_recall(home, args, query)
-    )
+    if not query:
+        return ToolResult(tool="memory.recall", ok=False, error="query is required")
+    return _execute_memory_recall(home, args, query)
 
 
 def _execute_memory_recall(home: Path, args: dict[str, Any], query: str) -> ToolResult:
@@ -114,12 +113,18 @@ def _execute_memory_recall(home: Path, args: dict[str, Any], query: str) -> Tool
 
 def _allowed_scopes(args: dict[str, Any]) -> set[str] | None:
     raw = args.get("_allowed_scopes")
-    return {str(item).strip() for item in raw if str(item).strip()} if isinstance(raw, list) else None
+    if not isinstance(raw, list):
+        return None
+    return {str(item).strip() for item in raw if str(item).strip()}
 
 
 def _memory_record_activation(home: Path, args: dict[str, Any]) -> ToolResult:
     raw_ids = args.get("item_ids")
-    raw_list = [raw_ids] if isinstance(raw_ids, str) else (raw_ids if isinstance(raw_ids, list) else [])
+    raw_list: list[Any] = []
+    if isinstance(raw_ids, str):
+        raw_list = [raw_ids]
+    if isinstance(raw_ids, list):
+        raw_list = raw_ids
     item_ids = [str(item).strip() for item in raw_list if str(item).strip()]
     reason = str(args.get("reason") or "").strip()
     provenance = str(args.get("provenance") or "").strip()
@@ -128,16 +133,14 @@ def _memory_record_activation(home: Path, args: dict[str, Any]) -> ToolResult:
         or ("reason is required" * int(not reason))
         or ("provenance is required" * int(not provenance))
     )
-    return (
-        ToolResult(tool="memory.record_activation", ok=False, error=validation_error)
-        if validation_error
-        else _execute_memory_record_activation(
-            home,
-            item_ids=item_ids,
-            reason=reason,
-            provenance=provenance,
-            args=args,
-        )
+    if validation_error:
+        return ToolResult(tool="memory.record_activation", ok=False, error=validation_error)
+    return _execute_memory_record_activation(
+        home,
+        item_ids=item_ids,
+        reason=reason,
+        provenance=provenance,
+        args=args,
     )
 
 
@@ -209,30 +212,47 @@ def _memory_conflicts(home: Path, args: dict[str, Any]) -> ToolResult:
 
 def _param_get(store: MemoryStore, args: dict[str, Any]) -> ToolResult:
     name = str(args.get("name") or "").strip()
+    if not name:
+        return ToolResult(
+            tool="memory.parameters",
+            ok=False,
+            error="name is required for get action",
+            facts={},
+        )
     entry = store.get_parameter_entry(name)
-    ok = bool(name and entry)
-    error = f"unknown memory parameter: {name}" if (name and not entry) else "name is required for get action"
+    if entry is None:
+        return ToolResult(
+            tool="memory.parameters",
+            ok=False,
+            error=f"unknown memory parameter: {name}",
+            facts={},
+        )
     return ToolResult(
         tool="memory.parameters",
-        ok=ok,
-        error=None if ok else error,
-        facts={"action": "get", "parameter": entry} if ok else {},
+        ok=True,
+        error=None,
+        facts={"action": "get", "parameter": entry},
     )
 
 
 def _param_set(store: MemoryStore, args: dict[str, Any]) -> ToolResult:
     name = str(args.get("name") or "").strip()
+    if not name or "value" not in args:
+        return ToolResult(
+            tool="memory.parameters",
+            ok=False,
+            error="name and value are required for set action",
+            facts={},
+        )
     val = float(args.get("value", 0.0))
     reason = str(args.get("reason") or "explicit_tool_update").strip()
-    ok = bool(name and "value" in args)
-    error = "name and value are required for set action" if not ok else None
-    _ = store.set_parameter(name, val, reason=reason) if ok else None
-    entry = store.get_parameter_entry(name) if ok else None
+    store.set_parameter(name, val, reason=reason)
+    entry = store.get_parameter_entry(name)
     return ToolResult(
         tool="memory.parameters",
-        ok=ok,
-        error=error,
-        facts={"action": "set", "parameter": entry} if ok else {},
+        ok=True,
+        error=None,
+        facts={"action": "set", "parameter": entry},
     )
 
 

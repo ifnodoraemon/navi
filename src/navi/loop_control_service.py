@@ -38,6 +38,12 @@ from .runs import Run, RunStore
 from .state_graph import StateGraphRunResult
 
 
+def _as_dict(val: Any) -> dict[str, Any]:
+    if isinstance(val, dict):
+        return dict(val)
+    return {}
+
+
 class ScheduleConflict(ValueError):
     """Raised when a recurring schedule operation would create ambiguity."""
 
@@ -139,6 +145,9 @@ class LoopControlServiceResult:
     state_transition: str = "opened"
 
     def to_facts(self) -> dict[str, Any]:
+        sg_facts: dict[str, Any] = {}
+        if self.state_graph_result:
+            sg_facts = self.state_graph_result.to_facts()
         return {
             "entity_type": "goal",
             "entity_id": self.goal.id,
@@ -165,9 +174,7 @@ class LoopControlServiceResult:
                 self.loop_run.terminal_state == LoopTerminalState.CONVERGED
                 and self.run.resolution == Resolution.SUCCESS
             ),
-            "state_graph_result": self.state_graph_result.to_facts()
-            if self.state_graph_result
-            else {},
+            "state_graph_result": sg_facts,
         }
 
 
@@ -180,6 +187,21 @@ class LoopControlService:
         self.goals = GoalStore(home)
         self.loop_runs = LoopRunStore(home)
         self.lifecycle_sagas = LifecycleSagaStore(home)
+
+    def _run_for_goal(self, goal: Any) -> Any:
+        if goal and getattr(goal, "run_id", None):
+            return self.runs.get(goal.run_id)
+        return None
+
+    def _accepted_for_goal(self, goal: Any) -> dict[str, Any]:
+        if goal and getattr(goal, "run_id", None):
+            return self.goals.accepted_result_for_run(goal.run_id)
+        return {}
+
+    def _approval_for_id(self, approval_id: str) -> Any:
+        if approval_id:
+            return self.runs.get_approval(approval_id)
+        return None
 
     def open_goal(self, request: OpenGoalRequest) -> LoopControlServiceResult:
         objective = request.objective.strip()
@@ -245,7 +267,10 @@ class LoopControlService:
         )
         goal: Goal | None = None
         try:
-            next_run_at = next_cron_time(cron_schedule, now=time.time()) if cron_schedule else 0.0
+            next_run_at = 0.0
+            if cron_schedule:
+                next_run_at = next_cron_time(cron_schedule, now=time.time())
+            task_status_map = {True: "scheduled", False: "in_progress"}
             goal = self.goals.create(
                 objective=objective,
                 workspace=workspace,
@@ -257,7 +282,7 @@ class LoopControlService:
                 timeout=float(max(1, request.timeout_seconds)),
                 max_retries=1,
                 parent_goal_id=request.parent_goal_id,
-                task_status="scheduled" if loop_kind == "scheduled" else "in_progress",
+                task_status=task_status_map[loop_kind == "scheduled"],
                 cron_schedule=cron_schedule,
                 next_run_at=next_run_at,
                 child_active_limit=request.child_active_limit,
@@ -293,7 +318,7 @@ class LoopControlService:
                     result_summary="schedule registered",
                     error="",
                 )
-                r = updated_run if updated_run is not None else run
+                r = updated_run or run
                 updated_goal = self.goals.update_state(
                     goal.id,
                     phase=Phase.RUNNING,
@@ -304,7 +329,7 @@ class LoopControlService:
                     evidence=registration,
                     event_type="goal.schedule_registered",
                 )
-                g = updated_goal if updated_goal is not None else goal
+                g = updated_goal or goal
                 return g, r, lr
 
             def _setup_standard() -> tuple[Any, Any, Any]:
@@ -322,12 +347,13 @@ class LoopControlService:
         except Exception as exc:
             self._compensate_open_failure(run, goal=goal, error=exc)
             raise
+        state_transition_map = {True: "scheduled", False: "opened"}
         return LoopControlServiceResult(
             goal=goal,
             run=run,
             loop_spec=spec,
             loop_run=loop_run,
-            state_transition="scheduled" if loop_kind == "scheduled" else "opened",
+            state_transition=state_transition_map[loop_kind == "scheduled"],
         )
 
     def update_goal(self, request: UpdateGoalRequest) -> LoopControlServiceResult:
@@ -368,11 +394,9 @@ class LoopControlService:
                     conflict_goal=conflict,
                     allow_duplicate_schedule=request.allow_duplicate_schedule,
                 )
-        next_run_at = (
-            next_cron_time(cron_schedule, now=time.time())
-            if cron_schedule != goal.cron_schedule
-            else goal.next_run_at
-        )
+        next_run_at = goal.next_run_at
+        if cron_schedule != goal.cron_schedule:
+            next_run_at = next_cron_time(cron_schedule, now=time.time())
         evidence = {
             "state_transition": "updated",
             "previous_objective": goal.objective,
@@ -394,6 +418,40 @@ class LoopControlService:
         if run is None:
             raise KeyError(f"run not found for goal: {updated_goal.run_id}")
         verification_command = _verification_command_from_spec(previous_spec)
+        scope_val = tuple(previous_spec.goal.scope)
+        if request.scope is not None:
+            scope_val = request.scope
+        constraints_val = tuple(previous_spec.goal.constraints)
+        if request.constraints is not None:
+            constraints_val = request.constraints
+        acceptance_criteria_val = tuple(previous_spec.goal.acceptance_criteria)
+        if request.acceptance_criteria is not None:
+            acceptance_criteria_val = request.acceptance_criteria
+        allowed_capabilities_val = tuple(previous_spec.allowed_capabilities)
+        if request.allowed_capabilities is not None:
+            allowed_capabilities_val = request.allowed_capabilities
+        verif_cmd = verification_command
+        if request.verification_command is not None:
+            verif_cmd = request.verification_command
+        timeout_sec = _timeout_seconds_from_spec(previous_spec)
+        if request.timeout_seconds > 0:
+            timeout_sec = request.timeout_seconds
+        token_b = previous_spec.budget_policy.token_budget
+        if request.token_budget >= 0:
+            token_b = request.token_budget
+        call_b = previous_spec.budget_policy.call_budget
+        if request.call_budget >= 0:
+            call_b = request.call_budget
+        cost_b = previous_spec.budget_policy.cost_budget
+        if request.cost_budget >= 0:
+            cost_b = request.cost_budget
+        qps_l = previous_spec.budget_policy.qps_limit
+        if request.qps_limit >= 0:
+            qps_l = request.qps_limit
+        max_c = previous_spec.budget_policy.max_concurrent
+        if request.max_concurrent > 0:
+            max_c = request.max_concurrent
+
         update_request = OpenGoalRequest(
             objective=updated_goal.objective,
             workspace=updated_goal.workspace,
@@ -402,52 +460,18 @@ class LoopControlService:
             peer_id=updated_goal.peer_id,
             sender_id=updated_goal.sender_id,
             session_id=updated_goal.session_id,
-            scope=request.scope if request.scope is not None else tuple(previous_spec.goal.scope),
-            constraints=request.constraints
-            if request.constraints is not None
-            else tuple(previous_spec.goal.constraints),
-            acceptance_criteria=request.acceptance_criteria
-            if request.acceptance_criteria is not None
-            else tuple(previous_spec.goal.acceptance_criteria),
+            scope=scope_val,
+            constraints=constraints_val,
+            acceptance_criteria=acceptance_criteria_val,
             permission_ceiling=request.permission_ceiling or previous_spec.goal.permission_ceiling,
-            allowed_capabilities=request.allowed_capabilities
-            if request.allowed_capabilities is not None
-            else tuple(previous_spec.allowed_capabilities),
-            verification_command=(
-                verification_command
-                if request.verification_command is None
-                else request.verification_command
-            ),
-            timeout_seconds=(
-                _timeout_seconds_from_spec(previous_spec)
-                if request.timeout_seconds <= 0
-                else request.timeout_seconds
-            ),
-            token_budget=(
-                previous_spec.budget_policy.token_budget
-                if request.token_budget < 0
-                else request.token_budget
-            ),
-            call_budget=(
-                previous_spec.budget_policy.call_budget
-                if request.call_budget < 0
-                else request.call_budget
-            ),
-            cost_budget=(
-                previous_spec.budget_policy.cost_budget
-                if request.cost_budget < 0
-                else request.cost_budget
-            ),
-            qps_limit=(
-                previous_spec.budget_policy.qps_limit
-                if request.qps_limit < 0
-                else request.qps_limit
-            ),
-            max_concurrent=(
-                previous_spec.budget_policy.max_concurrent
-                if request.max_concurrent <= 0
-                else request.max_concurrent
-            ),
+            allowed_capabilities=allowed_capabilities_val,
+            verification_command=verif_cmd,
+            timeout_seconds=timeout_sec,
+            token_budget=token_b,
+            call_budget=call_b,
+            cost_budget=cost_b,
+            qps_limit=qps_l,
+            max_concurrent=max_c,
             auto_start=True,
             execution_mode="scheduled",
             cron_schedule=cron_schedule,
@@ -491,9 +515,7 @@ class LoopControlService:
         occurrence_number = self.goals.count_children(goal.id) + 1
         prior_occurrences = []
         for child in children:
-            accepted_result = (
-                self.goals.accepted_result_for_run(child.run_id) if child.run_id else {}
-            )
+            accepted_result = self._accepted_for_goal(child)
             prior_occurrences.append(
                 {
                     "goal_id": child.id,
@@ -595,7 +617,7 @@ class LoopControlService:
         goal = self.goals.get(state.goal_id)
         if goal is None:
             raise KeyError(f"goal not found for loop run: {state.goal_id}")
-        run = self.runs.get(goal.run_id) if goal.run_id else None
+        run = self._run_for_goal(goal)
         if run is None:
             raise KeyError(f"run not found for goal: {goal.run_id}")
         _resolve_workspace(workspace or goal.workspace)
@@ -616,19 +638,18 @@ class LoopControlService:
         evidence: dict[str, Any] | None = None,
         persist_result_delivery: bool | None = None,
     ) -> LoopControlServiceResult:
+        checker_dict: dict[str, Any] = {}
+        if graph_result.checker_report:
+            checker_dict = graph_result.checker_report.to_dict()
         merged_evidence = {
             "loop_run_id": graph_result.run_state.run_id,
             "loop_terminal_state": graph_result.terminal_state,
-            "checker_report": graph_result.checker_report.to_dict()
-            if graph_result.checker_report
-            else {},
+            "checker_report": checker_dict,
             **(evidence or {}),
         }
-        delivery_required = (
-            str(graph_result.run_state.evidence.get("execution_mode") or "") == "background"
-            if persist_result_delivery is None
-            else bool(persist_result_delivery)
-        )
+        delivery_required = str(graph_result.run_state.evidence.get("execution_mode") or "") == "background"
+        if persist_result_delivery is not None:
+            delivery_required = bool(persist_result_delivery)
         background_delivery_pending = (
             graph_result.terminal_state == str(LoopTerminalState.CONVERGED)
             and delivery_required
@@ -749,7 +770,7 @@ class LoopControlService:
         limit: int = 1000,
     ) -> dict[str, Any]:
         """Reconcile approval entities with the exact LoopRuns that own them."""
-        current_time = time.time() if now is None else now
+        current_time = float(now or time.time())
         expired_approvals = self.runs.expire_pending_approvals(now=current_time)
         cancelled: list[str] = []
         paused: list[str] = []
@@ -762,12 +783,12 @@ class LoopControlService:
                 deferred.append(state.run_id)
                 continue
             goal = self.goals.get(state.goal_id)
-            run = self.runs.get(goal.run_id) if goal is not None and goal.run_id else None
+            run = self._run_for_goal(goal)
             if goal is None or run is None:
                 deferred.append(state.run_id)
                 continue
             approval_id = owned_approval_gate_id(state.evidence)
-            approval = self.runs.get_approval(approval_id) if approval_id else None
+            approval = self._approval_for_id(approval_id)
             if approval is None:
                 self.cancel_external_wait_durably(
                     loop_run_id=state.run_id,
@@ -849,7 +870,7 @@ class LoopControlService:
         goal = self.goals.get(state.goal_id)
         if goal is None:
             raise KeyError(f"goal not found for loop run: {state.goal_id}")
-        run = self.runs.get(goal.run_id) if goal.run_id else None
+        run = self._run_for_goal(goal)
         if run is None:
             raise KeyError(f"run not found for goal: {goal.run_id}")
         normalized_reason = reason.strip() or "external_wait_cancelled"
@@ -908,7 +929,7 @@ class LoopControlService:
         goal = self.goals.get(state.goal_id)
         if goal is None:
             raise KeyError(f"goal not found for loop run: {state.goal_id}")
-        run = self.runs.get(goal.run_id) if goal.run_id else None
+        run = self._run_for_goal(goal)
         if run is None:
             raise KeyError(f"run not found for goal: {goal.run_id}")
         normalized_reason = reason.strip() or "external_wait_paused"
@@ -994,7 +1015,7 @@ class LoopControlService:
         goal = self.goals.get(state.goal_id)
         if goal is None:
             raise KeyError(f"goal not found for loop run: {state.goal_id}")
-        run = self.runs.get(goal.run_id) if goal.run_id else None
+        run = self._run_for_goal(goal)
         if run is None:
             raise KeyError(f"run not found for goal: {goal.run_id}")
         is_paused_or_waiting = str(state.terminal_state) in {
@@ -1079,17 +1100,24 @@ class LoopControlService:
             if loop_run is None:
                 raise KeyError(f"loop run not found: {loop_run_id}")
             goal = self.goals.get(loop_run.goal_id)
-            run = self.runs.get(goal.run_id) if goal and goal.run_id else None
-            accepted = (
-                self.goals.accepted_result_for_run(goal.run_id) if goal and goal.run_id else {}
-            )
+            run = self._run_for_goal(goal)
+            accepted = self._accepted_for_goal(goal)
+            entity_id = loop_run.goal_id
+            if goal is not None:
+                entity_id = goal.id
+            goal_dict = {}
+            if goal is not None:
+                goal_dict = asdict(goal)
+            run_dict = {}
+            if run is not None:
+                run_dict = asdict(run)
             return {
                 "entity_type": "goal",
-                "entity_id": goal.id if goal else loop_run.goal_id,
+                "entity_id": entity_id,
                 "state_transition": "state_read",
                 "turn_scope": "current",
-                "goal": asdict(goal) if goal else {},
-                "run": asdict(run) if run else {},
+                "goal": goal_dict,
+                "run": run_dict,
                 "loop_run": loop_run.to_dict(),
                 "delivery": {
                     key: value
@@ -1101,35 +1129,31 @@ class LoopControlService:
             goal = self.goals.get(goal_id)
             if goal is None:
                 raise KeyError(f"goal not found: {goal_id}")
-            run = self.runs.get(goal.run_id) if goal.run_id else None
+            run = self._run_for_goal(goal)
             loop_runs = self.loop_runs.list_by_goal(goal_id, limit=limit)
-            accepted = self.goals.accepted_result_for_run(goal.run_id) if goal.run_id else {}
-            recent_occurrences = (
-                [
-                    {
-                        "goal": asdict(child),
-                        "delivery": {
-                            key: value
-                            for key, value in self.goals.accepted_result_for_run(
-                                child.run_id
-                            ).items()
-                            if key not in {"body", "body_provenance"}
-                        },
+            accepted = self._accepted_for_goal(goal)
+            run_dict = {}
+            if run is not None:
+                run_dict = asdict(run)
+            recent_occurrences = []
+            if goal.cron_schedule:
+                for child in self.goals.list_children(goal.id, limit=min(limit, 20), newest=True):
+                    child_delivery = {
+                        key: value
+                        for key, value in self.goals.accepted_result_for_run(child.run_id).items()
+                        if key not in {"body", "body_provenance"}
                     }
-                    for child in self.goals.list_children(
-                        goal.id, limit=min(limit, 20), newest=True
-                    )
-                ]
-                if goal.cron_schedule
-                else []
-            )
+                    recent_occurrences.append({
+                        "goal": asdict(child),
+                        "delivery": child_delivery,
+                    })
             return {
                 "entity_type": "goal",
                 "entity_id": goal.id,
                 "state_transition": "state_read",
                 "turn_scope": "current",
                 "goal": asdict(goal),
-                "run": asdict(run) if run else {},
+                "run": run_dict,
                 "loop_runs": [item.to_dict() for item in loop_runs],
                 "delivery": {
                     key: value
@@ -1248,7 +1272,7 @@ class LoopControlService:
     ) -> dict[str, Any]:
         terminal = result.terminal_state
         current = self.runs.get(run_id)
-        existing_summary = current.result_summary if current is not None else ""
+        existing_summary = getattr(current, "result_summary", "")
         surface_message = _surface_message_from_result(result)
         state_patch_matrix: dict[str, dict[str, Any]] = {
             str(LoopTerminalState.CONVERGED): {
@@ -1352,7 +1376,7 @@ class LoopControlService:
             ),
             limit=1,
         )
-        return matches[0] if matches else None
+        return next(iter(matches), None)
 
 
 def _resolve_workspace(workspace: str) -> str:
@@ -1473,10 +1497,9 @@ def _normalize_task_context(
     current_goal_id: str,
     parent_goal_id: str,
 ) -> dict[str, Any]:
-    lineage = raw.get("lineage") if isinstance(raw, dict) else {}
-    progress = raw.get("progress") if isinstance(raw, dict) else {}
-    lineage_dict = dict(lineage) if isinstance(lineage, dict) else {}
-    progress_dict = dict(progress) if isinstance(progress, dict) else {}
+    raw_dict = _as_dict(raw)
+    lineage_dict = _as_dict(raw_dict.get("lineage"))
+    progress_dict = _as_dict(raw_dict.get("progress"))
     authoritative_prior_items = [
         dict(item)
         for item in progress_dict.get("authoritative_prior_items") or []
@@ -1544,8 +1567,12 @@ def _workspace_policy_for_capabilities(
             project_dir=Path(workspace),
         ).list_specs()
     )
+    workspace_mode_map = {
+        True: WorkspaceMode.SHADOW,
+        False: WorkspaceMode.READ_ONLY,
+    }
     return WorkspacePolicy(
-        mode=WorkspaceMode.SHADOW if requires_shadow else WorkspaceMode.READ_ONLY,
+        mode=workspace_mode_map[requires_shadow],
     )
 
 
@@ -1559,7 +1586,11 @@ def _execution_mode(request: OpenGoalRequest, *, loop_kind: str) -> str:
         return declared
     if loop_kind == "scheduled":
         return "scheduled"
-    return "background" if request.auto_start else "manual"
+    exec_mode_map = {
+        True: "background",
+        False: "manual",
+    }
+    return exec_mode_map[bool(request.auto_start)]
 
 
 def _loop_kind(value: str) -> str:

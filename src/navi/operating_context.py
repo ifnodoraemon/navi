@@ -71,6 +71,7 @@ def permission_allows(required: str, ceiling: str) -> bool:
 def max_permission(current: str, requested: str) -> str:
     current_permission = normalize_permission(current)
     requested_permission = normalize_permission(requested)
-    current_level = PERMISSION_ORDER[current_permission]
-    requested_level = PERMISSION_ORDER[requested_permission]
-    return requested_permission if requested_level > current_level else current_permission
+    return max(
+        (current_permission, requested_permission),
+        key=lambda perm: PERMISSION_ORDER[perm],
+    )

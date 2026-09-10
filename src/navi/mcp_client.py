@@ -34,7 +34,7 @@ class MCPServerConfig:
 
     @property
     def transport_permission(self) -> str:
-        return "network" if self.transport == "streamable_http" else "write"
+        return {"streamable_http": "network"}.get(self.transport, "write")
 
     @property
     def allowed_tools(self) -> tuple[str, ...]:
@@ -138,11 +138,14 @@ class MCPClient:
                         yield session
             return
 
+        server_cwd = None
+        if self.server.cwd:
+            server_cwd = Path(self.server.cwd).expanduser()
         parameters = StdioServerParameters(
             command=self.server.command,
             args=list(self.server.args),
             env=_stdio_environment(self.server.env),
-            cwd=Path(self.server.cwd).expanduser() if self.server.cwd else None,
+            cwd=server_cwd,
         )
         async with stdio_client(parameters) as (read_stream, write_stream):
             async with ClientSession(
@@ -159,21 +162,22 @@ class MCPClient:
                 result = await session.list_tools()
         except Exception as exc:
             raise MCPTransportError(exc) from exc
-        return [
-            {
-                "name": tool.name,
-                "title": tool.title or "",
-                "description": tool.description or "",
-                "input_schema": tool.inputSchema,
-                "output_schema": tool.outputSchema or {},
-                "annotations": (
-                    tool.annotations.model_dump(mode="json", by_alias=True)
-                    if tool.annotations is not None
-                    else {}
-                ),
-            }
-            for tool in result.tools
-        ]
+        tools_payload: list[dict[str, Any]] = []
+        for tool in result.tools:
+            annotations: dict[str, Any] = {}
+            if tool.annotations is not None:
+                annotations = tool.annotations.model_dump(mode="json", by_alias=True)
+            tools_payload.append(
+                {
+                    "name": tool.name,
+                    "title": tool.title or "",
+                    "description": tool.description or "",
+                    "input_schema": tool.inputSchema,
+                    "output_schema": tool.outputSchema or {},
+                    "annotations": annotations,
+                }
+            )
+        return tools_payload
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -240,7 +244,7 @@ def mcp_exception_facts(exc: BaseException) -> MCPExceptionFacts:
 
     visit(exc)
     detail = "; ".join(messages) or type(exc).__name__
-    status_code = status_codes[0] if status_codes else 0
+    status_code = next(iter(status_codes), 0)
     retryable = timed_out or status_code in {408, 409, 425, 429} or status_code >= 500
     return MCPExceptionFacts(
         message=detail[:4000],

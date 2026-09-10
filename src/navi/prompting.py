@@ -94,10 +94,15 @@ def build_system_prompt_assembly(
     config = load_config(home)
     prompt_store = PromptLayerStore(home)
     operating_context = operating_context or OperatingContext(home=home)
-    workspace_path = Path(operating_context.workspace) if operating_context.workspace else workspace
-    workspace_text = str(workspace_path.resolve()) if workspace_path else "unknown"
+    workspace_path = workspace
+    if operating_context.workspace:
+        workspace_path = Path(operating_context.workspace)
+    workspace_text = "unknown"
+    if workspace_path:
+        workspace_text = str(workspace_path.resolve())
     unit_path = systemd_user_unit_path(config.runtime.service_name)
-    unit_state = "installed" if unit_path.exists() else "not installed"
+    unit_state_map = {True: "installed", False: "not installed"}
+    unit_state = unit_state_map[unit_path.exists()]
     runtime_lines = [
         "Local runtime facts:",
         f"- Current workspace: {workspace_text}",
@@ -115,14 +120,20 @@ def build_system_prompt_assembly(
     if runtime_static:
         runtime_lines.extend(runtime_static.splitlines())
 
+    memory_content = ""
+    if memory_context:
+        memory_content = f"Memory recall:\n{memory_context}"
+    skills_content = ""
+    if skills_context:
+        skills_content = f"Installed skills:\n{skills_context}"
     layers = [
         prompt_store.get("identity"),
         PromptLayer(
             "runtime",
             "\n".join(runtime_lines),
         ),
-        PromptLayer("memory", f"Memory recall:\n{memory_context}" if memory_context else ""),
-        PromptLayer("skills", f"Installed skills:\n{skills_context}" if skills_context else ""),
+        PromptLayer("memory", memory_content),
+        PromptLayer("skills", skills_content),
     ]
     return assemble_responder_system_prompt(layers, operating_context)
 

@@ -104,8 +104,8 @@ def _pragma_tuple(col: Column) -> tuple[str, str, int, int]:
     return (
         col.name,
         col.sql_type.upper(),
-        0 if col.nullable else 1,
-        1 if col.primary_key else 0,
+        int(not col.nullable),
+        int(bool(col.primary_key)),
     )
 
 

@@ -74,16 +74,29 @@ def _status(home: Path) -> dict[str, Any]:
 
 def _diagnostics(home: Path) -> list[dict[str, str]]:
     config = load_weixin_config(home)
-    saved_account = WeixinStore(home).load_account(config.account_id) if config.account_id else None
+    saved_account = None
+    if config.account_id:
+        saved_account = WeixinStore(home).load_account(config.account_id)
     token_present = bool(config.token or (saved_account and saved_account.token))
     ready = config.enabled and config.account_id and token_present
     health = WeixinStatusStore(home).snapshot()
     ingress_status = str(health.get("ingress_status") or "unknown")
     egress_status = str(health.get("egress_status") or "unknown")
+    config_status_map = {True: "ok", False: "missing"}
+    ingress_status_map = {
+        "healthy": "ok",
+        "fatal": "error",
+        "degraded": "error",
+        "stale": "error",
+    }
+    egress_status_map = {
+        "healthy": "ok",
+        "degraded": "error",
+    }
     return [
         {
             "name": f"connector.{SPEC.name}.config",
-            "status": "ok" if ready else "missing",
+            "status": config_status_map[bool(ready)],
             "detail": (
                 f"enabled={config.enabled} "
                 f"account_present={bool(config.account_id)} "
@@ -92,13 +105,7 @@ def _diagnostics(home: Path) -> list[dict[str, str]]:
         },
         {
             "name": f"connector.{SPEC.name}.ingress",
-            "status": (
-                "ok"
-                if ingress_status == "healthy"
-                else "error"
-                if ingress_status in {"fatal", "degraded", "stale"}
-                else "warn"
-            ),
+            "status": ingress_status_map.get(ingress_status, "warn"),
             "detail": (
                 f"ingress={ingress_status} "
                 f"age_seconds={health.get('ingress_age_seconds', 0):.1f} "
@@ -107,13 +114,7 @@ def _diagnostics(home: Path) -> list[dict[str, str]]:
         },
         {
             "name": f"connector.{SPEC.name}.egress",
-            "status": (
-                "ok"
-                if egress_status == "healthy"
-                else "error"
-                if egress_status == "degraded"
-                else "warn"
-            ),
+            "status": egress_status_map.get(egress_status, "warn"),
             "detail": (
                 f"egress={egress_status} "
                 f"reactive={health.get('reactive_egress_status', 'unknown')} "

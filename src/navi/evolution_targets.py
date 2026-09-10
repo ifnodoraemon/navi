@@ -107,9 +107,7 @@ class _PromptLayerAdapter:
             {
                 "format": "prompt_layer_snapshot_v1",
                 "override_exists": path.exists(),
-                "override_content": path.read_text(encoding="utf-8")
-                if path.exists()
-                else "",
+                "override_content": _read_file_text(path),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -152,7 +150,7 @@ class _SkillAdapter:
 
     def read(self, target_id: str) -> str:
         path = self._path(target_id)
-        return path.read_text(encoding="utf-8") if path.exists() else ""
+        return _read_file_text(path)
 
     def validate(self, target_id: str, candidate: str) -> dict[str, Any]:
         try:
@@ -179,7 +177,8 @@ class _SkillAdapter:
         if before:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(before, encoding="utf-8")
-        elif path.exists():
+            return
+        if path.exists():
             path.unlink()
 
 
@@ -195,7 +194,8 @@ class _MemoryItemAdapter:
 
     def read(self, target_id: str) -> str:
         item = self.store.get_item(target_id)
-        return json.dumps(item.__dict__, ensure_ascii=False, sort_keys=True) if item else ""
+        data = getattr(item, "__dict__", None)
+        return _dump_json_or_empty(data)
 
     def validate(self, target_id: str, candidate: str) -> dict[str, Any]:
         data = _json_object(candidate, "memory_item")
@@ -249,7 +249,7 @@ class _MemoryParameterAdapter:
 
     def read(self, target_id: str) -> str:
         param = self.store.get_parameter_entry(target_id)
-        return json.dumps(param, ensure_ascii=False, sort_keys=True) if param else ""
+        return _dump_json_or_empty(param)
 
     def validate(self, target_id: str, candidate: str) -> dict[str, Any]:
         data = _json_object(candidate, "memory_parameter")
@@ -267,7 +267,9 @@ class _MemoryParameterAdapter:
         )
 
     def rollback(self, target_id: str, before: str) -> None:
-        data = _json_object(before, "memory_parameter") if before else {}
+        data: dict[str, Any] = {}
+        if before:
+            data = _json_object(before, "memory_parameter")
         val = float(data.get("value", self.store.get_parameter(target_id)))
         self.store.set_parameter(
             target_id,
@@ -295,7 +297,7 @@ class _EvalCaseAdapter:
         if builtin is not None:
             return json.dumps(builtin, ensure_ascii=False, sort_keys=True)
         path = self._path(target_id)
-        return path.read_text(encoding="utf-8") if path.exists() else ""
+        return _read_file_text(path)
 
     def validate(self, target_id: str, candidate: str) -> dict[str, Any]:
         if target_id in BUILTIN_EVOLUTION_EVAL_CASES:
@@ -321,7 +323,8 @@ class _EvalCaseAdapter:
         if before:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(before, encoding="utf-8")
-        elif path.exists():
+            return
+        if path.exists():
             path.unlink()
 
     def list_available(self) -> tuple[dict[str, Any], ...]:
@@ -382,7 +385,8 @@ class _GraphNodeAdapter:
 
     def read(self, target_id: str) -> str:
         node = self.store.get(target_id)
-        return json.dumps(node.data, ensure_ascii=False, sort_keys=True) if node else ""
+        data = getattr(node, "data", None)
+        return _dump_json_or_empty(data)
 
     def validate(self, target_id: str, candidate: str) -> dict[str, Any]:
         if self.store.get(target_id) is None:
@@ -426,3 +430,17 @@ def _json_object(value: str, target_type: str) -> dict[str, Any]:
             f"{target_type} candidate must be a JSON object"
         )
     return data
+
+
+def _read_file_text(path: Path) -> str:
+    content = ""
+    if path.exists():
+        content = path.read_text(encoding="utf-8")
+    return content
+
+
+def _dump_json_or_empty(obj: Any) -> str:
+    result = ""
+    if obj is not None:
+        result = json.dumps(obj, ensure_ascii=False, sort_keys=True)
+    return result

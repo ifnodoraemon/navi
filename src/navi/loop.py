@@ -290,4 +290,6 @@ def classify_loop_blocked(output: dict[str, Any]) -> TraceFailureDomain:
 
 def trace_failure_domain(value: Any) -> str:
     text = str(value or "").strip()
-    return text if text in TRACE_FAILURE_DOMAIN_VALUES else ""
+    if text in TRACE_FAILURE_DOMAIN_VALUES:
+        return text
+    return ""

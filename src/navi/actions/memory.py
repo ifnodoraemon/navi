@@ -76,14 +76,25 @@ class MemoryAddCapability(BaseCapability):
         content = _arg_text(args, "content")
         if not memory_type or not content:
             raise SchemaMismatch("memory.add requires type and content.")
-        metadata = args.get("metadata") if isinstance(args.get("metadata"), dict) else {}
+        metadata: dict[str, Any] = {}
+        raw_metadata = args.get("metadata")
+        if isinstance(raw_metadata, dict):
+            metadata = raw_metadata
         reason = _arg_text(args, "reason")
         provenance = _arg_text(args, "provenance")
         if not reason or not provenance:
             raise SchemaMismatch("memory.add requires reason and provenance.")
         requested_scope = _arg_text(args, "scope")
-        scope = (
-            resolve_memory_scope(
+        scope = default_memory_scope(
+            source=context.source,
+            peer_id=context.peer_id,
+            sender_id=context.sender_id,
+            session_id=context.session_id or "",
+            workspace=context.workspace,
+            home=self.home,
+        )
+        if requested_scope:
+            scope = resolve_memory_scope(
                 requested_scope,
                 source=context.source,
                 peer_id=context.peer_id,
@@ -92,16 +103,6 @@ class MemoryAddCapability(BaseCapability):
                 workspace=context.workspace,
                 home=self.home,
             )
-            if requested_scope
-            else default_memory_scope(
-                source=context.source,
-                peer_id=context.peer_id,
-                sender_id=context.sender_id,
-                session_id=context.session_id or "",
-                workspace=context.workspace,
-                home=self.home,
-            )
-        )
         if scope not in allowed_scopes:
             raise PermissionDenied("memory.add scope is outside the caller policy envelope.")
         try:
@@ -152,7 +153,9 @@ class MemoryJobsCapability(BaseCapability):
         store = MemoryStore(self.home)
         job_id = _arg_text(args, "job_id")
         jobs = store.list_consolidation_jobs(job_id=job_id, status=status, limit=limit)
-        events = store.list_consolidation_job_events(job_id) if job_id else []
+        events = []
+        if job_id:
+            events = store.list_consolidation_job_events(job_id)
         return _fact_result(
             "memory_jobs",
             {
@@ -181,11 +184,9 @@ class MemoryRetryJobsCapability(BaseCapability):
         if not _is_local_memory_admin(context):
             raise PermissionDenied("memory job retry requires the local control surface.")
         raw_job_ids = args.get("job_ids")
-        job_ids = (
-            [str(item).strip() for item in raw_job_ids if str(item).strip()]
-            if isinstance(raw_job_ids, list)
-            else []
-        )
+        job_ids: list[str] = []
+        if isinstance(raw_job_ids, list):
+            job_ids = [str(item).strip() for item in raw_job_ids if str(item).strip()]
         reason = _arg_text(args, "reason")
         if not job_ids or not reason:
             raise SchemaMismatch("memory.retry_jobs requires job_ids and reason.")

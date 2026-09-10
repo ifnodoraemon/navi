@@ -402,7 +402,9 @@ class WorkspaceLock:
     lease_expiry: float
 
     def active(self, *, now: float | None = None) -> bool:
-        current = time.time() if now is None else now
+        current = time.time()
+        if now is not None:
+            current = now
         return self.lease_expiry > current
 
     def conflicts_with(self, other: WorkspaceLock, *, now: float | None = None) -> bool:
@@ -642,12 +644,18 @@ class CurrentStateSnapshot:
     connector_state: dict[str, Any] = field(default_factory=dict)
 
     def control_facts(self) -> dict[str, Any]:
+        loop_run_dict: dict[str, Any] = {}
+        if self.loop_run_state:
+            loop_run_dict = self.loop_run_state.to_dict()
+        workspace_dict: dict[str, Any] = {}
+        if self.workspace_state:
+            workspace_dict = self.workspace_state.to_dict()
         return {
             "goal_state": dict(self.goal_state),
-            "loop_run_state": self.loop_run_state.to_dict() if self.loop_run_state else {},
+            "loop_run_state": loop_run_dict,
             "approval_state": dict(self.approval_state),
             "budget_state": self.budget_state.to_dict(),
-            "workspace_state": self.workspace_state.to_dict() if self.workspace_state else {},
+            "workspace_state": workspace_dict,
             "lock_state": [lock.to_dict() for lock in self.locks],
             "provider_state": dict(self.provider_state),
             "delegation_state": dict(self.delegation_state),

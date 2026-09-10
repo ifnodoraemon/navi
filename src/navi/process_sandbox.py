@@ -69,18 +69,17 @@ def bubblewrap_command(
 
     executable = _resolve_executable(command[0], cwd=working_dir, path=path)
     in_sandbox_executable = None
-    persistent_home = (
-        sandbox_home.expanduser().resolve() if sandbox_home is not None else None
-    )
-    if executable is None and persistent_home is not None:
-        # The binary may live only inside the persistent sandbox HOME (pipx/pip
-        # --user installs).  On the host it is a symlink into /tmp/navi-home
-        # that does not resolve, so run it at its in-sandbox path instead.
-        in_sandbox_executable = _resolve_in_sandbox_executable(command[0], persistent_home)
+    persistent_home = None
+    if sandbox_home is not None:
+        persistent_home = sandbox_home.expanduser().resolve()
+    if executable is None:
+        if persistent_home is not None:
+            # The binary may live only inside the persistent sandbox HOME (pipx/pip
+            # --user installs).  On the host it is a symlink into /tmp/navi-home
+            # that does not resolve, so run it at its in-sandbox path instead.
+            in_sandbox_executable = _resolve_in_sandbox_executable(command[0], persistent_home)
         if in_sandbox_executable is None:
             return [], f"command not found: {command[0]}"
-    elif executable is None:
-        return [], f"command not found: {command[0]}"
 
     argv = [
         bwrap,
@@ -141,7 +140,8 @@ def bubblewrap_command(
     for parent in ancestors:
         argv.extend(("--dir", str(parent)))
         created_dirs.add(parent)
-    argv.extend(("--bind" if writable else "--ro-bind", str(root), str(root)))
+    bind_flag_map = {True: "--bind", False: "--ro-bind"}
+    argv.extend((bind_flag_map[bool(writable)], str(root), str(root)))
 
     for source, destination in read_only_binds or []:
         # Read-only overlays such as inbound connector media live outside the
@@ -166,13 +166,10 @@ def bubblewrap_command(
         argv.extend(("--ro-bind", str(bind_source), str(bind_destination)))
 
     sandbox_executable = in_sandbox_executable or executable
-    if in_sandbox_executable is not None:
-        # The persistent sandbox HOME is already bind-mounted (writable) at
-        # /tmp/navi-home, where this executable's symlinks and venv interpreter
-        # resolve.  Nothing extra needs binding.
-        pass
-    elif (
-        executable is not None
+    # If in_sandbox_executable is present, persistent sandbox HOME is already bind-mounted.
+    if (
+        in_sandbox_executable is None
+        and executable is not None
         and executable != root
         and root not in executable.parents
         and not str(executable).startswith("/usr/")
@@ -230,11 +227,17 @@ def bubblewrap_command(
 def _resolve_executable(value: str, *, cwd: Path, path: str) -> Path | None:
     raw = Path(value).expanduser()
     if "/" in value:
-        candidate = raw if raw.is_absolute() else cwd / raw
+        candidate = cwd / raw
+        if raw.is_absolute():
+            candidate = raw
         resolved = candidate.resolve()
-        return resolved if resolved.is_file() and os.access(resolved, os.X_OK) else None
+        if resolved.is_file() and os.access(resolved, os.X_OK):
+            return resolved
+        return None
     found = shutil.which(value, path=path)
-    return Path(found).resolve() if found else None
+    if not found:
+        return None
+    return Path(found).resolve()
 
 
 def _resolve_in_sandbox_executable(value: str, persistent_home: Path) -> Path | None:

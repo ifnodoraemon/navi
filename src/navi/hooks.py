@@ -99,7 +99,9 @@ def _load_local_hook_specs(home: Path) -> list[HookSpec]:
     specs: list[HookSpec] = []
     for path in sorted(hook_dir.glob("*.yaml")):
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or []
-        entries = raw.get("hooks") if isinstance(raw, dict) else raw
+        entries = raw
+        if isinstance(raw, dict):
+            entries = raw.get("hooks")
         if not isinstance(entries, list):
             raise ValueError(f"{path} must contain a hook list")
         source = f"local:{path.relative_to(home)}"
@@ -138,6 +140,7 @@ def _payload_matches(payload: dict[str, Any], match: dict[str, Any]) -> bool:
         if isinstance(expected, list):
             if actual not in expected:
                 return False
-        elif actual != expected:
+            continue
+        if actual != expected:
             return False
     return True

@@ -112,8 +112,11 @@ class Harness:
             (False, False): SecretVault,
         }
         self.vault = vault_builders[(vault is not None, home is not None)]()
-        self.shadow_workspaces = ShadowWorkspaceManager(home) if home is not None else None
-        self.workspace_locks = WorkspaceLockStore(home) if home is not None else None
+        self.shadow_workspaces = None
+        self.workspace_locks = None
+        if home is not None:
+            self.shadow_workspaces = ShadowWorkspaceManager(home)
+            self.workspace_locks = WorkspaceLockStore(home)
 
     def run_command(self, command: HarnessCommand) -> HarnessResult:
         command.timeout.validate()
@@ -161,6 +164,9 @@ class Harness:
         stdout_text = ""
         stderr_text = ""
         try:
+            fds: tuple[int, ...] = ()
+            if environment_fd is not None:
+                fds = (environment_fd,)
             try:
                 process = subprocess.Popen(
                     sandbox_command,
@@ -171,7 +177,7 @@ class Harness:
                     stderr=subprocess.PIPE,
                     text=True,
                     start_new_session=True,
-                    pass_fds=((environment_fd,) if environment_fd is not None else ()),
+                    pass_fds=fds,
                 )
             finally:
                 if environment_fd is not None:
@@ -236,9 +242,14 @@ class Harness:
             )
 
         duration = time.time() - started
-        returncode = process.returncode if process is not None else 127
+        returncode = 127
+        if process is not None:
+            returncode = process.returncode
         stdout = _redact(_tail(stdout_text, command.timeout.stdout_tail_bytes), secret_values)
         stderr = _redact(_tail(stderr_text, command.timeout.stderr_tail_bytes), secret_values)
+        error_type = "CommandFailed"
+        if returncode == 0:
+            error_type = ""
         return HarnessResult(
             ok=returncode == 0,
             command=command.command,
@@ -250,7 +261,7 @@ class Harness:
             duration_seconds=duration,
             timeout=command.timeout,
             checker_fact={
-                "error_type": "" if returncode == 0 else "CommandFailed",
+                "error_type": error_type,
                 "exit_code": returncode,
             },
         )

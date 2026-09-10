@@ -157,7 +157,7 @@ def _command_requires_network(argv: list[str]) -> bool:
     if binary in {"python", "python3"}:
         rest = argv[1:]
         if rest[:2] == ["-m", "pip"]:
-            subcommand = rest[2] if len(rest) > 2 else ""
+            subcommand = next(iter(rest[2:]), "")
             return subcommand in _PYTHON_MODULE_NETWORK_SUBCOMMANDS
         return False
     if binary in _SHELL_INTERPRETERS:
@@ -214,7 +214,7 @@ def _nested_command_requires_network(nested_argv: list[str]) -> bool:
     if binary in {"python", "python3"}:
         rest = nested_argv[1:]
         if rest[:2] == ["-m", "pip"]:
-            subcommand = rest[2] if len(rest) > 2 else ""
+            subcommand = next(iter(rest[2:]), "")
             return subcommand in _PYTHON_MODULE_NETWORK_SUBCOMMANDS
         return False
     matching = _NETWORK_REQUIRING_SUBCOMMANDS.get(binary)
@@ -235,37 +235,58 @@ def shell_call_policy(args: dict[str, Any] | None) -> dict[str, Any]:
     """Return a fail-closed effect classification for one argv-only shell call."""
     call_args = args or {}
     command = call_args.get("command")
-    argv = [str(item) for item in command] if isinstance(command, list) else []
-    binary = Path(argv[0]).name if argv else ""
+    argv: list[str] = []
+    if isinstance(command, list):
+        argv = [str(item) for item in command]
+    binary = ""
+    if argv:
+        binary = Path(argv[0]).name
     permission = "write"
     reason = "opaque_or_effectful_command"
     observation_scope = "workspace_sandbox"
     if argv and not bool(call_args.get("allocate_pty")):
-        if binary in _LOCAL_READ_ONLY_COMMANDS:
-            permission, reason = "read", "declared_local_read_only_command"
-            if binary in _HOST_PROCESS_OBSERVATION_COMMANDS:
-                observation_scope = "host_process_table"
-        elif binary == "hostname" and not _first_positional(argv[1:]):
-            permission, reason = "read", "hostname_read_only_query"
-        elif binary == "find" and not _find_has_effectful_action(argv[1:]):
-            permission, reason = "read", "find_without_effectful_action"
-        elif (
-            binary == "git"
-            and _first_positional(argv[1:]) in _GIT_READ_ONLY_SUBCOMMANDS
-            and not _git_has_output_file(argv[1:])
-        ):
-            permission, reason = "read", "declared_git_read_only_subcommand"
-        elif (
-            binary == "systemctl"
-            and _first_positional(argv[1:]) in _SYSTEMCTL_READ_ONLY_SUBCOMMANDS
-        ):
-            permission, reason = "read", "declared_systemctl_read_only_subcommand"
-        elif binary in {"docker", "kubectl"}:
-            subcommand = _first_positional(argv[1:])
-            if subcommand in _NETWORK_READ_ONLY_COMMANDS[binary]:
-                permission, reason = "network", f"declared_{binary}_read_only_subcommand"
-        elif _HELP_OR_VERSION_FLAGS.intersection(argv[1:]):
-            permission, reason = "read", "declared_help_or_version_query"
+        subcommand = _first_positional(argv[1:])
+        scope_map = {
+            True: "host_process_table",
+            False: "workspace_sandbox",
+        }
+        classification_ladder = [
+            (
+                binary in _LOCAL_READ_ONLY_COMMANDS,
+                ("read", "declared_local_read_only_command", scope_map[binary in _HOST_PROCESS_OBSERVATION_COMMANDS]),
+            ),
+            (
+                binary == "hostname" and not subcommand,
+                ("read", "hostname_read_only_query", "workspace_sandbox"),
+            ),
+            (
+                binary == "find" and not _find_has_effectful_action(argv[1:]),
+                ("read", "find_without_effectful_action", "workspace_sandbox"),
+            ),
+            (
+                binary == "git"
+                and subcommand in _GIT_READ_ONLY_SUBCOMMANDS
+                and not _git_has_output_file(argv[1:]),
+                ("read", "declared_git_read_only_subcommand", "workspace_sandbox"),
+            ),
+            (
+                binary == "systemctl"
+                and subcommand in _SYSTEMCTL_READ_ONLY_SUBCOMMANDS,
+                ("read", "declared_systemctl_read_only_subcommand", "workspace_sandbox"),
+            ),
+            (
+                binary in {"docker", "kubectl"} and subcommand in _NETWORK_READ_ONLY_COMMANDS.get(binary, set()),
+                ("network", f"declared_{binary}_read_only_subcommand", "workspace_sandbox"),
+            ),
+            (
+                bool(_HELP_OR_VERSION_FLAGS.intersection(argv[1:])),
+                ("read", "declared_help_or_version_query", "workspace_sandbox"),
+            ),
+        ]
+        permission, reason, observation_scope = next(
+            (result for matched, result in classification_ladder if matched),
+            (permission, reason, observation_scope),
+        )
     return {
         "binary": binary,
         "argument_count": max(0, len(argv) - 1),
@@ -277,12 +298,19 @@ def shell_call_policy(args: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+_AGENT_OP_PERMISSIONS = {
+    "spawn": "prepare",
+    "message": "prepare",
+    "cancel": "prepare",
+}
+
+
 def required_permission_for_call(spec: ToolSpec, args: dict[str, Any] | None) -> str:
     if spec.permission_policy == "shell_argv":
         return str(shell_call_policy(args)["required_permission"])
     if spec.permission_policy == "agent_operation":
         operation = str((args or {}).get("operation") or "").strip().lower()
-        return "prepare" if operation in {"spawn", "message", "cancel"} else "read"
+        return _AGENT_OP_PERMISSIONS.get(operation, "read")
     if spec.permission_policy == "argument_map":
         selected = str((args or {}).get(spec.argument_permission_field) or "").strip()
         mapped = dict(spec.argument_permissions).get(selected, "write")
@@ -311,6 +339,9 @@ def call_mutates(spec: ToolSpec, args: dict[str, Any] | None) -> bool:
     return True
 
 
+_SCHEME_DEFAULT_PORTS = {"https": 443, "http": 80}
+
+
 def prepare_capability_call(
     spec: ToolSpec,
     args: dict[str, Any] | None,
@@ -323,7 +354,7 @@ def prepare_capability_call(
     url = str(prepared.get("url") or "").strip()
     parsed = urlparse(url)
     host = (parsed.hostname or "").strip().lower()
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    port = parsed.port or _SCHEME_DEFAULT_PORTS.get(parsed.scheme, 80)
     if not host:
         return prepared, {
             "error_reason": "invalid_network_target",
@@ -569,8 +600,10 @@ def assess_capability_call(
 
 def _file_write_risk_facts(args: dict[str, Any], *, workspace: str) -> dict[str, Any]:
     raw_path = str(args.get("path") or "").strip()
-    requested_path = Path(raw_path).expanduser() if raw_path else Path(".")
-    workspace_path = Path(workspace).expanduser().resolve() if workspace else None
+    requested_path = Path(raw_path or ".").expanduser()
+    workspace_path = None
+    if workspace:
+        workspace_path = Path(workspace).expanduser().resolve()
     if not requested_path.is_absolute() and workspace_path is not None:
         requested_path = workspace_path / requested_path
     resolved_path = requested_path.resolve()
@@ -580,7 +613,9 @@ def _file_write_risk_facts(args: dict[str, Any], *, workspace: str) -> dict[str,
         and workspace_path not in resolved_path.parents
     )
     exists = resolved_path.is_file()
-    before_size = resolved_path.stat().st_size if exists else 0
+    before_size = 0
+    if exists:
+        before_size = resolved_path.stat().st_size
     requested_size = len(str(args.get("content") or "").encode("utf-8"))
     mode = str(args.get("mode") or "overwrite").strip().lower()
     return {
@@ -600,7 +635,9 @@ def _http_fetch_risk_facts(args: dict[str, Any]) -> dict[str, Any]:
     host = (parsed.hostname or "").strip().lower()
     method = str(args.get("method") or "GET").strip().upper()
     raw_headers = args.get("headers")
-    headers = raw_headers if isinstance(raw_headers, dict) else {}
+    headers: dict[str, Any] = {}
+    if isinstance(raw_headers, dict):
+        headers = raw_headers
     credentialed = any(
         str(key).strip().lower() in {"authorization", "cookie", "proxy-authorization"}
         for key in headers
@@ -657,21 +694,22 @@ def _http_fetch_risk_facts(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _declared_safeguard(spec: ToolSpec) -> dict:
-    default_key = "write" if spec.mutates or spec.permission == "write" else spec.permission
+    default_key = spec.permission
+    if spec.mutates:
+        default_key = "write"
     default_risk, default_contexts, default_confirmation, default_reason = _DEFAULT_SAFEGUARDS[
         default_key
     ]
     sensitive_contexts = spec.sensitive_contexts or default_contexts
     if spec.side_effect_policy.scope == "external":
         sensitive_contexts = (*sensitive_contexts, "external_side_effect")
+    confirmation_required = spec.confirmation_required
+    if confirmation_required is None:
+        confirmation_required = default_confirmation
     return {
         "risk_class": spec.risk_class or default_risk,
         "sensitive_contexts": sensitive_contexts,
-        "confirmation_required": (
-            default_confirmation
-            if spec.confirmation_required is None
-            else spec.confirmation_required
-        ),
+        "confirmation_required": confirmation_required,
         "reason_code": spec.risk_reason_code or default_reason,
     }
 
@@ -839,16 +877,14 @@ def canonical_approval_args_json(value: Any, *, home: Path) -> str:
     CDN DNS yield a different fingerprint each resolve and approved approvals
     never match on resume.
     """
-    filtered = (
-        {
+    filtered: Any = value or {}
+    if isinstance(value, dict):
+        filtered = {
             key: item
             for key, item in value.items()
             if key not in {"thought", "reasoning", "rationale"}
             and not str(key).startswith("_")
         }
-        if isinstance(value, dict)
-        else (value or {})
-    )
     key = _approval_hmac_key(home)
     protected = _protect_approval_value(filtered, key=key)
     return json.dumps(protected, ensure_ascii=False, sort_keys=True)

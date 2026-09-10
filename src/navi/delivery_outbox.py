@@ -25,6 +25,23 @@ DEFAULT_MAX_ATTEMPTS = 3
 STALE_SENDING_SECONDS = 300.0
 
 
+def _resolve_now(now: float | None = None) -> float:
+    t = time.time()
+    if now is not None:
+        t = float(now)
+    return t
+
+
+def _as_dict(value: str) -> dict[str, Any]:
+    try:
+        loaded = json.loads(value)
+        if isinstance(loaded, dict):
+            return loaded
+        return {}
+    except (TypeError, ValueError):
+        return {}
+
+
 @dataclass(frozen=True)
 class DeliveryItem:
     """One independently receipted transport operation.
@@ -61,18 +78,15 @@ class DeliveryItem:
 
     @property
     def payload(self) -> dict[str, Any]:
-        raw = _json_object(self.payload_json)
-        return raw if isinstance(raw, dict) else {}
+        return _as_dict(self.payload_json)
 
     @property
     def receipt(self) -> dict[str, Any]:
-        raw = _json_object(self.receipt_json)
-        return raw if isinstance(raw, dict) else {}
+        return _as_dict(self.receipt_json)
 
     @property
     def transport_context(self) -> dict[str, Any]:
-        raw = _json_object(self.transport_context_json)
-        return raw if isinstance(raw, dict) else {}
+        return _as_dict(self.transport_context_json)
 
 
 @dataclass(frozen=True)
@@ -93,7 +107,7 @@ class DeliveryEnvelope:
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
 
     def items(self, *, now: float | None = None) -> tuple[DeliveryItem, ...]:
-        current_time = time.time() if now is None else float(now)
+        current_time = _resolve_now(now)
         batch_id = _stable_batch_id(self.batch_id)
 
         def item(*, item_id: str, kind: str, payload_json: str, body: str) -> DeliveryItem:
@@ -249,7 +263,9 @@ class DeliveryOutboxStore:
                 f"SELECT {DELIVERY_OUTBOX_TABLE.select_list} FROM delivery_outbox WHERE id = ?",
                 (item_id,),
             ).fetchone()
-        return _item_from_row(row) if row else None
+        if row is None:
+            return None
+        return _item_from_row(row)
 
     def latest_for_run(self, run_id: str) -> DeliveryItem | None:
         if not run_id:
@@ -263,7 +279,9 @@ class DeliveryOutboxStore:
                 """,
                 (run_id,),
             ).fetchone()
-        return _item_from_row(row) if row else None
+        if row is None:
+            return None
+        return _item_from_row(row)
 
     def claim_ready(
         self,
@@ -273,16 +291,15 @@ class DeliveryOutboxStore:
         now: float | None = None,
         minimum_priority: int | None = None,
     ) -> list[DeliveryItem]:
-        current_time = time.time() if now is None else float(now)
+        current_time = _resolve_now(now)
         claimed: list[DeliveryItem] = []
-        priority_clause = (
-            "AND COALESCE(CAST(json_extract(transport_context_json, '$.priority') "
-            "AS INTEGER), 0) >= ?"
-            if minimum_priority is not None
-            else ""
-        )
+        priority_clause = ""
         params: list[Any] = [channel, current_time]
         if minimum_priority is not None:
+            priority_clause = (
+                "AND COALESCE(CAST(json_extract(transport_context_json, '$.priority') "
+                "AS INTEGER), 0) >= ?"
+            )
             params.append(int(minimum_priority))
         params.append(max(1, int(limit)))
         with connect(self.db_path) as conn:
@@ -330,7 +347,9 @@ class DeliveryOutboxStore:
         sent_at: float | None = None,
     ) -> DeliveryItem | None:
         current_time = time.time()
-        accepted_at = current_time if sent_at is None else float(sent_at)
+        accepted_at = current_time
+        if sent_at is not None:
+            accepted_at = float(sent_at)
         with connect(self.db_path) as conn:
             cursor = conn.execute(
                 """
@@ -359,7 +378,7 @@ class DeliveryOutboxStore:
         retry_after_seconds: float,
         now: float | None = None,
     ) -> DeliveryItem | None:
-        current_time = time.time() if now is None else float(now)
+        current_time = _resolve_now(now)
         with connect(self.db_path) as conn:
             conn.execute(
                 """
@@ -391,7 +410,7 @@ class DeliveryOutboxStore:
 
     def requeue_failed(self, item_id: str, *, now: float | None = None) -> DeliveryItem:
         """Explicitly requeue one failed, non-expired item with the same payload and key."""
-        current_time = time.time() if now is None else float(now)
+        current_time = _resolve_now(now)
         item = self.get(item_id)
         if item is None:
             raise KeyError(f"delivery item not found: {item_id}")
@@ -426,7 +445,7 @@ class DeliveryOutboxStore:
         limit: int = 100,
     ) -> list[DeliveryItem]:
         """Return interrupted idempotent items to the queue without changing their key."""
-        current_time = time.time() if now is None else float(now)
+        current_time = _resolve_now(now)
         cutoff = current_time - max(1.0, float(stale_after_seconds))
         recovered: list[DeliveryItem] = []
         with connect(self.db_path) as conn:
@@ -496,7 +515,7 @@ class DeliveryOutboxStore:
         return completed
 
     def mark_batch_projected(self, batch_id: str, *, projected_at: float | None = None) -> None:
-        current_time = time.time() if projected_at is None else float(projected_at)
+        current_time = _resolve_now(projected_at)
         with connect(self.db_path) as conn:
             conn.execute(
                 "UPDATE delivery_outbox SET projected_at = ? WHERE batch_id = ? AND projected_at = 0",
@@ -595,7 +614,7 @@ class DeliveryOutboxStore:
                     updated_at,
                     sent_at,
                 ) = row
-                migrated_status = "unknown" if status == "sending" else str(status)
+                migrated_status = {"sending": "unknown"}.get(status, str(status))
                 item = DeliveryItem(
                     id=f"legacy:{legacy_id}:text",
                     batch_id=f"legacy:{legacy_id}",
@@ -614,11 +633,9 @@ class DeliveryOutboxStore:
                     attempts=int(attempts),
                     max_attempts=DEFAULT_MAX_ATTEMPTS,
                     next_attempt_at=float(updated_at),
-                    error=(
-                        "connector_delivery_outcome_unknown: legacy worker stopped before receipt"
-                        if migrated_status == "unknown"
-                        else str(error)
-                    ),
+                    error={
+                        "unknown": "connector_delivery_outcome_unknown: legacy worker stopped before receipt"
+                    }.get(migrated_status, str(error)),
                     receipt_json="{}",
                     delivery_id=str(delivery_id),
                     projected_at=0.0,
@@ -727,7 +744,9 @@ def envelope_from_response(
 ) -> DeliveryEnvelope:
     """Build one durable batch from a normal response or connector file fact."""
     delivery_id = str(getattr(connector_delivery, "delivery_id", "") or "")
-    delivery_text = str(getattr(connector_delivery, "text", "") or "")
+    delivery_text = text
+    if connector_delivery is not None:
+        delivery_text = str(getattr(connector_delivery, "text", "") or "")
     delivery_path = str(getattr(connector_delivery, "path", "") or "")
     delivery_run = str(getattr(connector_delivery, "run_id", "") or "")
     delivery_goal = str(getattr(connector_delivery, "goal_id", "") or "")
@@ -740,7 +759,7 @@ def envelope_from_response(
         trace_id=trace_id,
         run_id=delivery_run or run_id,
         goal_id=delivery_goal or goal_id,
-        text=delivery_text if connector_delivery is not None else text,
+        text=delivery_text,
         body_provenance=body_provenance,
         file_path=delivery_path,
         transport_context=transport_context,

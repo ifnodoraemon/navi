@@ -459,7 +459,9 @@ class TraceStore:
                     thread_by_trace[tid] = row[3]
 
             input_hashes = {v[0] for v in first_by_trace.values() if v[0] and v[0].startswith("blob:")}
-            blobs = self._fetch_blobs(input_hashes) if input_hashes else {}
+            blobs = {}
+            if input_hashes:
+                blobs = self._fetch_blobs(input_hashes)
 
             first_event_map = {}
             for meta in metas:
@@ -608,9 +610,15 @@ class TraceStore:
             if not has_blob:
                 parsed_data.append((e, None))
                 continue
+            in_val = None
+            if e.input_json:
+                in_val = json.loads(e.input_json)
+            out_val = None
+            if e.output_json:
+                out_val = json.loads(e.output_json)
             data = {
-                "in": json.loads(e.input_json) if e.input_json else None,
-                "out": json.loads(e.output_json) if e.output_json else None,
+                "in": in_val,
+                "out": out_val,
             }
             parsed_data.append((e, data))
 
@@ -643,6 +651,11 @@ class TraceStore:
                 return [_replace(v) for v in d]
             return d
 
+        def _dumps_or_empty(val: Any) -> str:
+            if val is not None:
+                return json.dumps(val, ensure_ascii=False, sort_keys=True)
+            return ""
+
         resolved_events = []
         for e, parsed in parsed_data:
             if parsed is None:
@@ -652,12 +665,8 @@ class TraceStore:
             resolved_events.append(
                 replace(
                     e,
-                    input_json=json.dumps(resolved_data.get("in"), ensure_ascii=False, sort_keys=True)
-                    if resolved_data.get("in") is not None
-                    else "",
-                    output_json=json.dumps(resolved_data.get("out"), ensure_ascii=False, sort_keys=True)
-                    if resolved_data.get("out") is not None
-                    else "",
+                    input_json=_dumps_or_empty(resolved_data.get("in")),
+                    output_json=_dumps_or_empty(resolved_data.get("out")),
                 )
             )
         return resolved_events
@@ -771,7 +780,10 @@ def _event_input(event: TraceEvent) -> dict[str, Any]:
 
 def _event_facts(event: TraceEvent) -> dict[str, Any]:
     facts = _event_output(event).get("facts")
-    return facts if isinstance(facts, dict) else {}
+    result: dict[str, Any] = {}
+    if isinstance(facts, dict):
+        result = facts
+    return result
 
 
 def _trace_run_views(events: list[TraceEvent], *, trace_id: str) -> list[TraceRunView]:
@@ -790,15 +802,16 @@ def _trace_run_views(events: list[TraceEvent], *, trace_id: str) -> list[TraceRu
 
     first_session_id = next((event.session_id for event in events if event.session_id), "")
     draft = _evaluate_trace_with_rules(events, _base_trace_evidence(events))
+    root_status = {
+        str(TraceOutcome.SUCCESS): TraceRunStatus.SUCCESS,
+    }.get(draft.outcome, TraceRunStatus.ERROR)
     root = TraceRunView(
         id=trace_id,
         trace_id=trace_id,
         parent_run_id="",
         name="Trace",
         run_type=TraceRunType.CHAIN,
-        status=TraceRunStatus.SUCCESS
-        if draft.outcome == str(TraceOutcome.SUCCESS)
-        else TraceRunStatus.ERROR,
+        status=root_status,
         start_time=min(event.created_at for event in events),
         end_time=max(event.created_at for event in events),
         thread_id=first_session_id,
@@ -905,10 +918,13 @@ def _trace_run_views(events: list[TraceEvent], *, trace_id: str) -> list[TraceRu
                 name=f"Decision: {decision_val}",
                 run_type=TraceRunType.CHAIN,
             )
-        elif event.phase == str(TracePhase.CAPABILITY_RESULT):
+        if event.phase == str(TracePhase.CAPABILITY_RESULT):
+            tool_name = "Tool Execution"
+            if event.tool:
+                tool_name = f"Tool: {event.tool}"
             ev_view = replace(
                 ev_view,
-                name=f"Tool: {event.tool}" if event.tool else "Tool Execution",
+                name=tool_name,
                 run_type=TraceRunType.TOOL,
             )
 
@@ -921,11 +937,12 @@ def _trace_run_views(events: list[TraceEvent], *, trace_id: str) -> list[TraceRu
             if v.run_type == TraceRunType.CHAIN and v.id != trace_id:
                 children = [c for c in views if c.parent_run_id == v.id]
                 if children:
-                    status = v.status
-                    if any(c.status == TraceRunStatus.ERROR for c in children):
-                        status = TraceRunStatus.ERROR
-                    elif any(c.status == "blocked" for c in children):
-                        status = "blocked"
+                    child_statuses = {c.status for c in children}
+                    status_ladder = [
+                        (TraceRunStatus.ERROR in child_statuses, TraceRunStatus.ERROR),
+                        ("blocked" in child_statuses, "blocked"),
+                    ]
+                    status = next((st for matched, st in status_ladder if matched), v.status)
                     views[index] = replace(
                         v,
                         start_time=min(c.start_time for c in children),
@@ -1013,7 +1030,7 @@ def _merge_run_views(
             )
     return sorted(
         merged.values(),
-        key=lambda item: (0 if not item.parent_run_id else 1, item.start_time, item.id),
+        key=lambda item: (int(bool(item.parent_run_id)), item.start_time, item.id),
     )
 
 
@@ -1100,8 +1117,8 @@ def _loop_run_views_for_trace(
             if item.get("created_at")
         ]
         updated_at = float(state.get("updated_at") or 0.0)
-        start_time = min(timestamps) if timestamps else updated_at
-        end_time = max(timestamps) if timestamps else updated_at
+        start_time = min(timestamps, default=updated_at)
+        end_time = max(timestamps, default=updated_at)
         status = _loop_run_status(str(state.get("terminal_state") or ""))
         root_id = f"looprun_{loop_run_id}"
         views.append(
@@ -1131,7 +1148,9 @@ def _loop_run_views_for_trace(
         )
         for item in event_items:
             terminal_state = str(item.get("terminal_state") or "")
-            event_status = _loop_run_status(terminal_state) if terminal_state else "success"
+            event_status = "success"
+            if terminal_state:
+                event_status = _loop_run_status(terminal_state)
             event_type = str(item.get("event_type") or "loop.event")
             views.append(
                 TraceRunView(
@@ -1203,7 +1222,8 @@ def _collect_loop_run_ids(value: Any, ids: set[str]) -> None:
                 ids.add(raw_run_id.strip())
         for item in value.values():
             _collect_loop_run_ids(item, ids)
-    elif isinstance(value, list):
+        return
+    if isinstance(value, list):
         for item in value:
             _collect_loop_run_ids(item, ids)
 
@@ -1883,7 +1903,9 @@ def _schema_version(conn, component: str) -> int | None:
         "SELECT version FROM schema_versions WHERE component = ?",
         (component,),
     ).fetchone()
-    return int(row[0]) if row is not None else None
+    if row is None:
+        return None
+    return int(row[0])
 
 
 def _table_exists(conn, table: str) -> bool:

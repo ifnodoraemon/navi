@@ -207,7 +207,10 @@ def _send_file_handler(args: dict[str, Any], *, default_workspace: Path):
     try:
         root = Path(args.get("_workspace_root") or default_workspace).expanduser().resolve()
         requested = Path(raw_path).expanduser()
-        source = (requested if requested.is_absolute() else root / requested).resolve()
+        candidate = root / requested
+        if requested.is_absolute():
+            candidate = requested
+        source = candidate.resolve()
     except OSError as exc:
         return ToolResult(tool="channel.send_file", ok=False, error=str(exc))
     if source != root and root not in source.parents:

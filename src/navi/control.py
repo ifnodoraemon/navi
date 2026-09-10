@@ -421,11 +421,9 @@ class ApprovalService:
             )
 
         completion_evidence = bool(continued.to_facts().get("completion_evidence"))
-        continuation_status = (
-            "completed"
-            if completion_evidence
-            else str(continued.loop_run.terminal_state or "running")
-        )
+        continuation_status = str(continued.loop_run.terminal_state or "running")
+        if completion_evidence:
+            continuation_status = "completed"
         facts = {
             **resolved.facts,
             "run_phase": str(continued.run.phase),
@@ -482,7 +480,9 @@ class ApprovalService:
         context: SurfaceContext,
     ) -> Approval | None:
         expected_id = owned_approval_gate_id(loop_run.evidence)
-        approval = runs.get_approval(expected_id) if expected_id else None
+        if not expected_id:
+            return None
+        approval = runs.get_approval(expected_id)
         if approval is None or not run_matches_context(approval, context):
             return None
         return approval
@@ -497,17 +497,13 @@ class ApprovalService:
         code_present: bool,
         active_run_count: int,
     ) -> ApprovalResolution:
-        expected_status = (
-            APPROVAL_STATUS_APPROVED
-            if decision == APPROVAL_DECISION_APPROVE
-            else APPROVAL_STATUS_REJECTED
-        )
+        expected_status = {
+            APPROVAL_DECISION_APPROVE: APPROVAL_STATUS_APPROVED,
+        }.get(decision, APPROVAL_STATUS_REJECTED)
         if approval.status != expected_status:
-            reason = (
-                "approval_expired"
-                if approval.status == APPROVAL_STATUS_EXPIRED
-                else f"approval_already_{approval.status}"
-            )
+            reason = {
+                APPROVAL_STATUS_EXPIRED: "approval_expired",
+            }.get(approval.status, f"approval_already_{approval.status}")
             return _approval_not_resolved(
                 decision=decision,
                 reason=reason,
@@ -518,10 +514,15 @@ class ApprovalService:
                 approval_id=approval.id,
             )
         run = runs.get(approval.run_id)
-        phase = run.phase if run is not None else Phase.ENDED
-        governance = run.governance if run is not None else Governance.NONE
-        acceptance = run.acceptance if run is not None else Acceptance.NONE
-        resolution = run.resolution if run is not None else Resolution.NONE
+        phase = Phase.ENDED
+        governance = Governance.NONE
+        acceptance = Acceptance.NONE
+        resolution = Resolution.NONE
+        if run is not None:
+            phase = run.phase
+            governance = run.governance
+            acceptance = run.acceptance
+            resolution = run.resolution
         facts = self._resolution_facts(
             resolved=approval,
             normalized_decision=decision,
@@ -627,10 +628,13 @@ class ApprovalService:
             evidence={"approval_id": approval.id, "decision": "reject"},
             event_type="goal.approval_rejected",
         )
+        goal_id = goal.id
+        if rejected_goal is not None:
+            goal_id = rejected_goal.id
         return {
             "continuation_status": "rejected",
             "completion_evidence": False,
-            "goal_id": rejected_goal.id if rejected_goal is not None else goal.id,
+            "goal_id": goal_id,
             "loop_run_id": rejected_loop.run_id,
             "loop_terminal_state": str(rejected_loop.terminal_state),
         }
@@ -754,7 +758,7 @@ def current_state_facts(state: CurrentState) -> dict[str, Any]:
             ],
         },
         "budget_state": state.budget_state.to_dict(),
-        "workspace_state": state.workspace_state.to_dict() if state.workspace_state else {},
+        "workspace_state": _workspace_state_dict(state.workspace_state),
         "lock_state": [lock.to_dict() for lock in state.lock_state],
         "provider_state": dict(state.provider_state),
         "delegation_state": dict(state.delegation_state),
@@ -766,9 +770,17 @@ def current_state_facts(state: CurrentState) -> dict[str, Any]:
     }
 
 
+def _workspace_state_dict(ws: WorkspaceState | None) -> dict[str, Any]:
+    if not ws:
+        return {}
+    return ws.to_dict()
+
+
 def current_time_facts(*, now: float | None = None) -> dict[str, Any]:
     """Return the runtime clock as explicit model-facing facts."""
-    timestamp = time.time() if now is None else now
+    timestamp = time.time()
+    if now is not None:
+        timestamp = now
     local_now = datetime.fromtimestamp(timestamp).astimezone()
     return {
         "unix": timestamp,
@@ -815,7 +827,9 @@ def _loop_run_prompt_facts(loop_run: LoopRunState) -> dict[str, Any]:
 
 def _approval_continuation_facts(loop_run: LoopRunState) -> dict[str, Any]:
     """Expose the resumed operation's facts separately from approval metadata."""
-    evidence = loop_run.evidence if isinstance(loop_run.evidence, dict) else {}
+    evidence = {}
+    if isinstance(loop_run.evidence, dict):
+        evidence = loop_run.evidence
     executor = evidence.get("executor")
     checker_results = evidence.get("checker_results")
     facts: dict[str, Any] = {}
@@ -893,10 +907,23 @@ def _recent_goal_outcomes(
     loop_runs = LoopRunStore(home)
     outcomes: list[dict[str, Any]] = []
     for goal in goals:
-        run = runs.get(goal.run_id) if goal.run_id else None
+        run = None
+        if goal.run_id:
+            run = runs.get(goal.run_id)
         goal_loop_runs = loop_runs.list_by_goal(goal.id, limit=1)
-        loop_run = goal_loop_runs[0] if goal_loop_runs else None
-        continuation = _approval_continuation_facts(loop_run) if loop_run else {}
+        loop_run = None
+        continuation = {}
+        if goal_loop_runs:
+            loop_run = goal_loop_runs[0]
+            continuation = _approval_continuation_facts(loop_run)
+        run_summary = ""
+        run_error = ""
+        if run is not None:
+            run_summary = str(run.result_summary or "")
+            run_error = str(run.error or "")
+        terminal_state = ""
+        if loop_run is not None:
+            terminal_state = str(loop_run.terminal_state or "")
         outcomes.append(
             {
                 "goal_id": goal.id,
@@ -906,14 +933,10 @@ def _recent_goal_outcomes(
                 "resolution": goal.resolution,
                 "task_status": getattr(goal, "task_status", ""),
                 "run_id": goal.run_id,
-                "result_summary": _non_authoritative_run_summary(
-                    str(run.result_summary or "") if run else ""
-                ),
+                "result_summary": _non_authoritative_run_summary(run_summary),
                 "result_summary_provenance": "assistant_candidate_non_authoritative",
-                "error": str(run.error or "") if run else "",
-                "loop_terminal_state": str(loop_run.terminal_state or "")
-                if loop_run
-                else "",
+                "error": run_error,
+                "loop_terminal_state": terminal_state,
                 "continuation": _bounded_state_value(continuation),
                 "updated_at": goal.updated_at,
             }
@@ -972,7 +995,9 @@ def _bounded_state_value(value: Any, *, depth: int = 0) -> Any:
             return {"truncated": True, "type": type(value).__name__}
         return value
     if isinstance(value, str):
-        return value if len(value) <= 500 else value[:500] + " ... [truncated]"
+        if len(value) <= 500:
+            return value
+        return value[:500] + " ... [truncated]"
     if isinstance(value, dict):
         return {
             str(key): _bounded_state_value(nested, depth=depth + 1)
@@ -1019,7 +1044,9 @@ def _active_shadow_workspaces(home: Path, context: SurfaceContext) -> tuple[Any,
 def _workspace_state(context: SurfaceContext, active_shadows: tuple[Any, ...]) -> WorkspaceState | None:
     if not context.workspace and not active_shadows:
         return None
-    first_shadow = active_shadows[0].shadow_workspace if active_shadows else ""
+    first_shadow = ""
+    if active_shadows:
+        first_shadow = active_shadows[0].shadow_workspace
     return WorkspaceState(
         workspace=context.workspace,
         shadow_workspace=first_shadow,

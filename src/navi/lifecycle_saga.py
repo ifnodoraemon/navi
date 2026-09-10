@@ -172,7 +172,9 @@ class LifecycleSagaStore:
         """Fail stale partial loop creations without racing an in-flight creator."""
         from .lifecycle import Acceptance, Governance, Phase, Resolution
 
-        current_time = time.time() if now is None else now
+        current_time = time.time()
+        if now is not None:
+            current_time = now
         cutoff = current_time - max(1.0, grace_seconds)
         runs = RunStore(self.home)
         goals = GoalStore(self.home)
@@ -216,7 +218,9 @@ class LifecycleSagaStore:
                 or goal.created_at > cutoff
             ):
                 continue
-            candidate_run = runs.get(goal.run_id) if goal.run_id in run_ids else None
+            candidate_run = None
+            if goal.run_id in run_ids:
+                candidate_run = runs.get(goal.run_id)
             if candidate_run is not None and candidate_run.phase != Phase.ENDED:
                 runs.update_run(
                     candidate_run.id,
@@ -281,7 +285,9 @@ class LifecycleSagaStore:
                 """,
                 (saga_id,),
             ).fetchone()
-        return LifecycleSaga(*row) if row else None
+        if not row:
+            return None
+        return LifecycleSaga(*row)
 
     def _mark_failed(self, saga_id: str, error: Exception) -> None:
         with connect(self.db_path) as conn:

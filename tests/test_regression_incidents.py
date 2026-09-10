@@ -455,9 +455,8 @@ async def test_active_turn_sensitive_shell_call_creates_durable_approval(tmp_pat
     assert settled is not None
     assert settled.phase == Phase.ENDED
     assert settled.governance == Governance.APPROVED
-    assert settled.resolution == (
-        Resolution.SUCCESS if executed.ok else Resolution.FAILED
-    )
+    expected_resolution = {True: Resolution.SUCCESS, False: Resolution.FAILED}[bool(executed.ok)]
+    assert settled.resolution == expected_resolution
     receipt = next(
         log
         for log in RunStore(tmp_path).list_tool_call_logs(limit=20)

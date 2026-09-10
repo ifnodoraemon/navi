@@ -254,6 +254,9 @@ class EvolutionLedger:
             raise ValueError(f"unknown ledger target type: {target_type}")
         if event_kind not in {"audit", "apply"}:
             raise ValueError(f"unknown evolution event kind: {event_kind}")
+        resolved_rollback = before
+        if rollback_state is not None:
+            resolved_rollback = rollback_state
         event = EvolutionEvent(
             id=uuid.uuid4().hex,
             run_id=run_id,
@@ -266,7 +269,7 @@ class EvolutionLedger:
             created_at=time.time(),
             rolled_back_at=0.0,
             event_kind=event_kind,
-            rollback_state=before if rollback_state is None else rollback_state,
+            rollback_state=resolved_rollback,
             proposal_id=proposal_id,
         )
         with connect(self.db_path) as conn:
@@ -321,7 +324,9 @@ class EvolutionLedger:
                 """,
                 (event_id,),
             ).fetchone()
-        return EvolutionEvent(*row) if row else None
+        if not row:
+            return None
+        return EvolutionEvent(*row)
 
     def rollback_applied_event(
         self,
@@ -491,7 +496,9 @@ class EvolutionLedger:
                 """,
                 (proposal_id,),
             ).fetchone()
-        return EvolutionProposal(*row) if row else None
+        if not row:
+            return None
+        return EvolutionProposal(*row)
 
     def record_proposal_evaluation(
         self,
@@ -522,6 +529,7 @@ class EvolutionLedger:
         approver_id = ""
         approved_at = 0.0
         approval_id = approval_id.strip()
+        persisted_approval_id = ""
         if evaluation_result == "approved":
             approval = self._approved_evolution_apply_approval(
                 proposal_id=proposal_id,
@@ -529,6 +537,7 @@ class EvolutionLedger:
             )
             approver_id = approval.resolved_by
             approved_at = approval.updated_at
+            persisted_approval_id = approval_id
         with connect(self.db_path) as conn:
             conn.execute(
                 """
@@ -542,7 +551,7 @@ class EvolutionLedger:
                     approver_id,
                     approved_at,
                     evaluation_evidence,
-                    approval_id if evaluation_result == "approved" else "",
+                    persisted_approval_id,
                     proposal_id,
                 ),
             )
@@ -559,7 +568,7 @@ class EvolutionLedger:
                     "evaluation_evidence": evaluation_evidence,
                     "approved_by": approver_id,
                     "approved_at": approved_at,
-                    "approval_id": approval_id if evaluation_result == "approved" else "",
+                    "approval_id": persisted_approval_id,
                 },
                 sort_keys=True,
             ),
@@ -622,7 +631,9 @@ class EvolutionLedger:
                 """,
                 (proposal_id,),
             ).fetchone()
-        return EvolutionEvent(*row) if row else None
+        if not row:
+            return None
+        return EvolutionEvent(*row)
 
     def claim_for_apply(self, proposal_id: str) -> EvolutionProposal:
         with connect(self.db_path) as conn:
@@ -637,7 +648,9 @@ class EvolutionLedger:
                     "SELECT status FROM evolution_proposals WHERE id = ?",
                     (proposal_id,),
                 ).fetchone()
-                status = str(row[0]) if row else "missing"
+                status = "missing"
+                if row:
+                    status = str(row[0])
                 raise ValueError(f"cannot claim proposal in status: {status}")
         claimed = self.get_proposal(proposal_id)
         if claimed is None:

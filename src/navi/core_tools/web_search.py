@@ -19,6 +19,7 @@ from urllib.request import Request
 
 from navi.capability_contract import CAPABILITY_ERROR_REASON_KEY, CAPABILITY_RETRYABLE_KEY
 from navi.config import NaviConfig, SearchProviderConfig, load_config
+from navi.json_utils import json_object
 from navi.mcp_client import MCPClient, MCPServerConfig, MCPTransportError
 from navi.mcp_tools import parse_mcp_config
 
@@ -33,6 +34,43 @@ _X_RESPONSE_MAX_BYTES = 4_000_000
 _FORBIDDEN_SEARCH_HEADERS = frozenset(
     {"host", "content-length", "transfer-encoding", "connection"}
 )
+_SCHEME_DEFAULT_PORTS: dict[str, int] = {"https": 443, "http": 80}
+
+
+def _format_host_label(host: str) -> str:
+    if ":" in host:
+        return f"[{host}]"
+    return host
+
+
+def _as_list(val: Any) -> list[Any]:
+    if isinstance(val, list):
+        return val
+    return []
+
+
+def _resolve_search_config(config: NaviConfig | None, home: Path | None) -> NaviConfig:
+    if config is not None:
+        return config
+    if home is not None:
+        return load_config(home)
+    return NaviConfig()
+
+
+def _format_x_title(name: str, username: str, post_id: str) -> str:
+    if name and username:
+        return f"{name} (@{username}) on X"
+    if username:
+        return f"@{username} on X"
+    return f"X post {post_id}"
+
+
+def _format_x_url(username: str, post_id: str) -> str:
+    if username and post_id:
+        return f"https://x.com/{username}/status/{post_id}"
+    if post_id:
+        return f"https://x.com/i/status/{post_id}"
+    return ""
 
 
 class SearchTargetRejectedError(ValueError):
@@ -87,7 +125,8 @@ def urlopen(request: Request, timeout: float) -> _PinnedHTTPResponse:
             rejected_addresses=[],
             reason="credentialed_target",
         )
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    default_port = _SCHEME_DEFAULT_PORTS.get(parsed.scheme, 80)
+    port = parsed.port or default_port
     infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     addresses = sorted({str(item[4][0]) for item in infos if item and item[4]})
     if not addresses:
@@ -113,9 +152,11 @@ def urlopen(request: Request, timeout: float) -> _PinnedHTTPResponse:
         for key, value in request.header_items()
         if str(key).lower() not in _FORBIDDEN_SEARCH_HEADERS
     }
-    default_port = 443 if parsed.scheme == "https" else 80
-    host_label = f"[{host}]" if ":" in host else host
-    headers["Host"] = host_label if port == default_port else f"{host_label}:{port}"
+    host_label = _format_host_label(host)
+    host_header = host_label
+    if port != default_port:
+        host_header = f"{host_label}:{port}"
+    headers["Host"] = host_header
     path_query = parsed.path or "/"
     if parsed.query:
         path_query += f"?{parsed.query}"
@@ -168,20 +209,16 @@ def _rejected_search_addresses(
         except ValueError:
             rejected.append(raw)
             continue
-        if (
+        is_disallowed = (
             address.is_link_local
             or address.is_multicast
             or address.is_reserved
             or address.is_unspecified
-        ):
-            rejected.append(raw)
-        elif address.is_loopback:
-            if not allow_loopback:
-                rejected.append(raw)
-        elif address.is_private:
-            if not allow_private_network:
-                rejected.append(raw)
-        elif not address.is_global:
+            or (address.is_loopback and not allow_loopback)
+            or (address.is_private and not allow_private_network)
+            or (not address.is_global and not address.is_loopback and not address.is_private)
+        )
+        if is_disallowed:
             rejected.append(raw)
     return rejected
 
@@ -243,7 +280,9 @@ class SearXNGSearchProvider:
     ) -> list[str]:
         del config, home
         _, error = _searxng_search_url(provider.endpoint, query="validation")
-        return [f"search.providers.{provider_id}.endpoint: {error}"] if error else []
+        if not error:
+            return []
+        return [f"search.providers.{provider_id}.endpoint: {error}"]
 
     def safe_endpoint(
         self,
@@ -289,7 +328,9 @@ class ExaMCPSearchProvider:
             config,
             home=home,
         )
-        return [error] if error else []
+        if not error:
+            return []
+        return [error]
 
     def safe_endpoint(
         self,
@@ -346,7 +387,7 @@ class XAPISearchProvider:
             errors.append(
                 f"search.providers.{provider_id}.endpoint must be an https URL"
             )
-        elif parsed.username or parsed.password:
+        if not errors and (parsed.username or parsed.password):
             errors.append(
                 f"search.providers.{provider_id}.endpoint must not include credentials"
             )
@@ -426,7 +467,9 @@ def search_provider_catalog(
     catalog: list[dict[str, Any]] = []
     for provider_id, provider in sorted(config.search.providers.items()):
         adapter = _SEARCH_PROVIDER_ADAPTERS.get(provider.kind)
-        endpoint = adapter.safe_endpoint(provider, config) if adapter else ""
+        endpoint = ""
+        if adapter:
+            endpoint = adapter.safe_endpoint(provider, config)
         catalog.append(
             {
                 "id": provider_id,
@@ -460,7 +503,7 @@ async def _web_search(
 ) -> ToolResult:
     query = str(args.get("query") or "").strip()
     provider_id = str(args.get("provider") or "").strip()
-    config = config or (load_config(home) if home is not None else NaviConfig())
+    config = _resolve_search_config(config, home)
     available = list(enabled_search_provider_ids(config))
 
     if not query:
@@ -709,11 +752,7 @@ def _searxng_search(
         "answers": _as_string_list(payload.get("answers"))[:3],
         "corrections": _as_string_list(payload.get("corrections"))[:3],
         "suggestions": _as_string_list(payload.get("suggestions"))[:5],
-        "infoboxes": (
-            payload.get("infoboxes")
-            if isinstance(payload.get("infoboxes"), list)
-            else []
-        ),
+        "infoboxes": _as_list(payload.get("infoboxes")),
         "provider_errors": provider_errors,
         "response": {
             "result_count": len(results),
@@ -742,7 +781,7 @@ def _searxng_search_url(
         return "", "SearXNG endpoint must not include credentials"
     path = parsed.path.rstrip("/")
     if not path.endswith("/search"):
-        path = f"{path}/search" if path else "/search"
+        path = f"{path}/search"
     params = {"q": query, "format": "json"}
     if categories:
         params["categories"] = categories
@@ -829,9 +868,12 @@ def _exa_server(
             None,
             f"search.providers.{provider_id}.mcp_server is required for exa_mcp",
         )
+    config_path = Path("config.yaml")
+    if home is not None:
+        config_path = home / "config.yaml"
     report = parse_mcp_config(
         config,
-        path=(home / "config.yaml") if home is not None else Path("config.yaml"),
+        path=config_path,
     )
     if report.errors:
         return None, "; ".join(report.errors)
@@ -870,13 +912,16 @@ async def _exa_mcp_search(
         extra: dict[str, Any] = {"error_type": type(exc.cause).__name__}
         if info.status_code:
             extra["status_code"] = info.status_code
+        failure_reason = "search_provider_error"
+        if info.timed_out:
+            failure_reason = "search_timeout"
         return _provider_failure(
             provider_id=provider_id,
             provider_kind="exa_mcp",
             query=request.query,
             endpoint=server.safe_endpoint,
             error=info.message,
-            reason="search_timeout" if info.timed_out else "search_provider_error",
+            reason=failure_reason,
             retryable=info.retryable,
             extra=extra,
         )
@@ -1022,8 +1067,7 @@ def _x_api_search(
                 "provider_errors": provider_errors,
             },
         )
-    raw_meta = payload.get("meta")
-    meta: dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
+    meta = json_object(payload.get("meta"))
     response = {
         "result_count": len(results),
         "provider_error_count": len(provider_errors),
@@ -1090,9 +1134,7 @@ def _normalize_x_api_results(
     raw_data = payload.get("data")
     if not isinstance(raw_data, list):
         return []
-    includes = payload.get("includes")
-    candidate_users = includes.get("users") if isinstance(includes, dict) else []
-    raw_users: list[Any] = candidate_users if isinstance(candidate_users, list) else []
+    raw_users = _as_list(json_object(payload.get("includes")).get("users"))
     users = {
         str(item.get("id") or ""): item
         for item in raw_users
@@ -1110,20 +1152,8 @@ def _normalize_x_api_results(
         user = users.get(author_id, {})
         username = str(user.get("username") or "").strip()
         name = _bounded_search_text(user.get("name") or "", _SEARCH_TITLE_MAX_CHARS)
-        title = (
-            f"{name} (@{username}) on X"
-            if name and username
-            else f"@{username} on X"
-            if username
-            else f"X post {post_id}"
-        )
-        url = (
-            f"https://x.com/{username}/status/{post_id}"
-            if username and post_id
-            else f"https://x.com/i/status/{post_id}"
-            if post_id
-            else ""
-        )
+        title = _format_x_title(name, username, post_id)
+        url = _format_x_url(username, post_id)
         item: dict[str, Any] = {
             "kind": "social_post",
             "title": title,
@@ -1199,11 +1229,9 @@ def _read_json_response(
             body = response.read(max_bytes).decode("utf-8", errors="replace")
             response_headers = getattr(response, "headers", {})
         if 300 <= status < 400:
-            location = str(
-                response_headers.get("location", "")
-                if hasattr(response_headers, "get")
-                else ""
-            )
+            location = ""
+            if hasattr(response_headers, "get"):
+                location = str(response_headers.get("location", "") or "")
             return None, _provider_failure(
                 provider_id=provider_id,
                 provider_kind=provider_kind,
@@ -1307,8 +1335,10 @@ def _safe_http_endpoint(value: str) -> str:
         port = parsed.port
     except ValueError:
         return ""
-    host_label = f"[{host}]" if ":" in host else host
-    netloc = host_label if port is None else f"{host_label}:{port}"
+    host_label = _format_host_label(host)
+    netloc = host_label
+    if port is not None:
+        netloc = f"{host_label}:{port}"
     return urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
 
 

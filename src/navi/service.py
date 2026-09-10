@@ -30,7 +30,9 @@ class SystemdNotifier:
         cls,
         environment: Mapping[str, str] | None = None,
     ) -> SystemdNotifier:
-        env = os.environ if environment is None else environment
+        env = environment
+        if env is None:
+            env = os.environ
         notify_socket = str(env.get("NOTIFY_SOCKET") or "")
         watchdog_pid = str(env.get("WATCHDOG_PID") or "").strip()
         if watchdog_pid and watchdog_pid != str(os.getpid()):
@@ -39,7 +41,9 @@ class SystemdNotifier:
             watchdog_usec = max(0, int(str(env.get("WATCHDOG_USEC") or "0")))
         except ValueError:
             watchdog_usec = 0
-        interval = watchdog_usec / 3_000_000.0 if watchdog_usec > 0 else 0.0
+        interval = 0.0
+        if watchdog_usec > 0:
+            interval = watchdog_usec / 3_000_000.0
         return cls(
             notify_socket=notify_socket,
             watchdog_interval_seconds=interval,
@@ -76,7 +80,9 @@ class SystemdNotifier:
         if self.watchdog_interval_seconds <= 0:
             return
         while True:
-            error = runtime_check() if runtime_check is not None else ""
+            error = ""
+            if runtime_check is not None:
+                error = runtime_check()
             if error:
                 status = f"Navi runtime unavailable: {error}"
                 self.notify(f"STATUS={status[:500]}")
@@ -92,8 +98,9 @@ def runtime_environment_error() -> str:
         ("python prefix", Path(sys.prefix), "directory"),
         ("navi package", Path(__file__), "file"),
     )
+    checkers = {"file": lambda p: p.is_file(), "directory": lambda p: p.is_dir()}
     for label, path, kind in required:
-        available = path.is_file() if kind == "file" else path.is_dir()
+        available = checkers.get(kind, lambda p: p.is_dir())(path)
         if not available:
             return f"{label} missing: {path}"
     return ""
@@ -226,7 +233,9 @@ def _build_systemd_user_unit(
             f"Environment={_systemd_quote(f'NAVI_HOME={navi_home.resolve()}')}"
         )
     env_block = "\n".join(env_lines)
-    watchdog_block = "NotifyAccess=main\nWatchdogSec=90s\n" if watchdog else ""
+    watchdog_block = ""
+    if watchdog:
+        watchdog_block = "NotifyAccess=main\nWatchdogSec=90s\n"
     return (
         "[Unit]\n"
         f"Description={description}\n"

@@ -59,7 +59,9 @@ class EffectJournal:
         lease_seconds: float = 900.0,
         now: float | None = None,
     ) -> EffectReservation:
-        current_time = time.time() if now is None else now
+        current_time = time.time()
+        if now is not None:
+            current_time = now
         with connect(self.db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(

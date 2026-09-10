@@ -151,7 +151,9 @@ class SQLiteResourceLedger:
                 "FROM resource_scopes WHERE scope_id = ?",
                 (scope_id,),
             ).fetchone()
-        return ResourceUsage(*row) if row else ResourceUsage()
+        if not row:
+            return ResourceUsage()
+        return ResourceUsage(*row)
 
     def reserve(
         self,
@@ -257,8 +259,12 @@ class SQLiteResourceLedger:
             if row is None or str(row[3]) != "active":
                 return self._usage_in_transaction(conn, scope_id)
             reserved_tokens, reserved_cost, units = int(row[0]), float(row[1]), int(row[2])
-            final_tokens = reserved_tokens if actual_tokens is None else max(0, actual_tokens)
-            final_cost = reserved_cost if actual_cost is None else max(0.0, actual_cost)
+            final_tokens = reserved_tokens
+            if actual_tokens is not None:
+                final_tokens = max(0, actual_tokens)
+            final_cost = reserved_cost
+            if actual_cost is not None:
+                final_cost = max(0.0, actual_cost)
             conn.execute(
                 """
                 UPDATE resource_scopes
@@ -328,7 +334,9 @@ class SQLiteResourceLedger:
             "FROM resource_scopes WHERE scope_id = ?",
             (scope_id,),
         ).fetchone()
-        return ResourceUsage(*row) if row else ResourceUsage()
+        if not row:
+            return ResourceUsage()
+        return ResourceUsage(*row)
 
     @staticmethod
     def _decision(
@@ -363,7 +371,9 @@ class SQLiteResourceLedger:
                 """,
                 (scope_id, now - 1.0),
             ).fetchone()
-            count = int(row[0]) if row else 0
+            count = 0
+            if row:
+                count = int(row[0])
             if count >= limits.qps_limit:
                 earliest = float(row[1] or now)
                 return ResourceDecision.PAUSE, "rate_limited", max(0.0, 1.0 - (now - earliest))
@@ -409,7 +419,9 @@ class GlobalResourceGateway:
         )
 
     def request(self, request: ResourceRequest, *, now: float | None = None) -> ResourceGrant:
-        current = time.time() if now is None else now
+        current = now
+        if current is None:
+            current = time.time()
         if not request.reserve:
             return ResourceGrant(
                 decision=ResourceDecision.ALLOW,

@@ -83,7 +83,7 @@ class GraphStore:
     def upsert(self, node_type: str, name: str, data: dict[str, Any]) -> GraphNode:
         now = time.time()
         existing = self.get_by_name(node_type, name)
-        merged = {**(existing.data if existing else {}), **data}
+        merged = {**getattr(existing, "data", {}), **data}
         if existing:
             with connect(self.db_path) as conn:
                 conn.execute(
@@ -122,7 +122,9 @@ class GraphStore:
                 "SELECT id, type, name, data, created_at, updated_at FROM graph_nodes WHERE id = ?",
                 (node_id,),
             ).fetchone()
-        return self._node_from_row(row) if row else None
+        if not row:
+            return None
+        return self._node_from_row(row)
 
     def get_by_name(self, node_type: str, name: str) -> GraphNode | None:
         with connect(self.db_path) as conn:
@@ -133,7 +135,9 @@ class GraphStore:
                 """,
                 (node_type, name),
             ).fetchone()
-        return self._node_from_row(row) if row else None
+        if not row:
+            return None
+        return self._node_from_row(row)
 
     def list(self, node_type: str | None = None, *, limit: int = 100) -> list[GraphNode]:
         query_specs = {
@@ -182,7 +186,7 @@ class GraphStore:
         now = time.time()
         edge_data = dict(data or {})
         existing = self.get_edge(source_id, target_id, relation)
-        merged = {**(existing.data if existing else {}), **edge_data}
+        merged = {**getattr(existing, "data", {}), **edge_data}
         if existing:
             with connect(self.db_path) as conn:
                 conn.execute(
@@ -229,7 +233,9 @@ class GraphStore:
                 """,
                 (source_id, target_id, relation),
             ).fetchone()
-        return self._edge_from_row(row) if row else None
+        if not row:
+            return None
+        return self._edge_from_row(row)
 
     def list_edges(
         self,
@@ -250,7 +256,9 @@ class GraphStore:
         if relation:
             clauses.append("relation = ?")
             values.append(relation)
-        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        where = ""
+        if clauses:
+            where = " WHERE " + " AND ".join(clauses)
         values.append(limit)
         with connect(self.db_path) as conn:
             rows = conn.execute(

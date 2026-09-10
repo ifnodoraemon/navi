@@ -82,7 +82,9 @@ class IdentityStore:
                 "SELECT identity_id FROM identity_aliases WHERE alias_key = ?",
                 (alias_key,),
             ).fetchone()
-        return str(row[0]) if row else ""
+        if not row:
+            return ""
+        return str(row[0])
 
     def aliases(self, identity_id: str) -> tuple[dict[str, str], ...]:
         with connect(self.db_path) as conn:

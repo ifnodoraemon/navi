@@ -20,7 +20,9 @@ def connect(path: Path) -> Iterator[sqlite3.Connection]:
 
 def _ensure_wal_mode(conn: sqlite3.Connection) -> None:
     row = conn.execute("PRAGMA journal_mode").fetchone()
-    mode = str(row[0]).lower() if row else ""
+    mode = ""
+    if row:
+        mode = str(row[0]).lower()
     if mode != "wal":
         _execute_with_busy_retry(conn, "PRAGMA journal_mode=WAL")
 
@@ -40,7 +42,9 @@ def read_schema_version(conn: sqlite3.Connection, component: str) -> int | None:
     row = conn.execute(
         "SELECT version FROM schema_versions WHERE component = ?", (component,)
     ).fetchone()
-    return int(row[0]) if row is not None else None
+    if row is None:
+        return None
+    return int(row[0])
 
 
 def check_schema_version(conn: sqlite3.Connection, component: str, version: int) -> None:

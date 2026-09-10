@@ -22,6 +22,18 @@ from .runs import RunStore
 from .trace import TraceStore
 
 
+def _resolve_now(now: float | None = None) -> float:
+    t = time.time()
+    if now is not None:
+        t = float(now)
+    return t
+
+
+def _safe_ratio(numerator: float, denominator: float) -> float:
+    denom = float(denominator)
+    return (float(numerator) / (denom + float(denom == 0.0))) * float(denom != 0.0)
+
+
 @dataclass(frozen=True, slots=True)
 class MetricFact:
     name: str
@@ -85,7 +97,7 @@ class MetricsProjector:
         DeliveryOutboxStore(home)
 
     def snapshot(self, *, now: float | None = None, window_seconds: float = 604800) -> SystemMetricsSnapshot:
-        current_time = time.time() if now is None else now
+        current_time = _resolve_now(now)
         cutoff = current_time - max(60.0, window_seconds)
         runs = self._run_metrics(cutoff)
         traces = self._trace_metrics(cutoff)
@@ -286,16 +298,18 @@ class MetricsProjector:
                 """,
                 (cutoff,),
             ).fetchone()
-        terminal = int(row[0] or 0) if row else 0
-        successful = int(row[1] or 0) if row else 0
-        canceled = int(row[2] or 0) if row else 0
+        if row is None:
+            row = (0, 0, 0)
+        terminal = int(row[0] or 0)
+        successful = int(row[1] or 0)
+        canceled = int(row[2] or 0)
         evaluated = terminal - canceled
         return {
             "terminal": terminal,
             "evaluated": evaluated,
             "canceled": canceled,
             "successful": successful,
-            "success_rate": successful / evaluated if evaluated else 0.0,
+            "success_rate": _safe_ratio(successful, evaluated),
         }
 
     def _trace_metrics(self, cutoff: float) -> dict[str, Any]:
@@ -314,12 +328,14 @@ class MetricsProjector:
                 """,
                 (cutoff,),
             ).fetchone()
-        evaluated = int(row[0] or 0) if row else 0
-        failed = int(row[1] or 0) if row else 0
+        if row is None:
+            row = (0, 0)
+        evaluated = int(row[0] or 0)
+        failed = int(row[1] or 0)
         return {
             "evaluated": evaluated,
             "failed": failed,
-            "failure_rate": failed / evaluated if evaluated else 0.0,
+            "failure_rate": _safe_ratio(failed, evaluated),
         }
 
     def _integrity_metrics(self, now: float) -> dict[str, Any]:
@@ -510,11 +526,13 @@ class MetricsProjector:
                 """,
                 (now - 300.0, cutoff),
             ).fetchone()
-        items = int(row[0] or 0) if row else 0
-        pending = int(row[1] or 0) if row else 0
-        overdue_pending = int(row[2] or 0) if row else 0
-        proactive_terminal = int(row[3] or 0) if row else 0
-        proactive_sent = int(row[4] or 0) if row else 0
+        if row is None:
+            row = (0, 0, 0, 0, 0)
+        items = int(row[0] or 0)
+        pending = int(row[1] or 0)
+        overdue_pending = int(row[2] or 0)
+        proactive_terminal = int(row[3] or 0)
+        proactive_sent = int(row[4] or 0)
         return {
             "delivery_items": items,
             "items": items,
@@ -522,9 +540,7 @@ class MetricsProjector:
             "overdue_pending": overdue_pending,
             "proactive_terminal": proactive_terminal,
             "proactive_sent": proactive_sent,
-            "proactive_success_rate": (
-                proactive_sent / proactive_terminal if proactive_terminal else 0.0
-            ),
+            "proactive_success_rate": _safe_ratio(proactive_sent, proactive_terminal),
         }
 
 

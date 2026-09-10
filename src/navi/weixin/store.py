@@ -18,6 +18,12 @@ CONTEXT_TOKEN_MAX_AGE_SECONDS = 86400.0
 WEIXIN_INGRESS_STALE_AFTER_SECONDS = 180.0
 
 
+def _resolve_ts(ts: float | int | None) -> float:
+    if ts is None:
+        return time.time()
+    return float(ts)
+
+
 class WeixinStore:
     @staticmethod
     def connector_name() -> str:
@@ -96,7 +102,7 @@ class WeixinPeerSession:
         now: float | None = None,
         max_age_seconds: float = CONTEXT_TOKEN_MAX_AGE_SECONDS,
     ) -> bool:
-        current_time = time.time() if now is None else float(now)
+        current_time = _resolve_ts(now)
         return bool(
             self.context_token
             and self.observed_at > self.invalidated_at
@@ -125,7 +131,9 @@ class WeixinSessionStore:
         if not self.path.exists():
             return {}
         data = json.loads(self.path.read_text(encoding="utf-8"))
-        raw_sessions = data.get("sessions") if isinstance(data, dict) else None
+        raw_sessions = None
+        if isinstance(data, dict):
+            raw_sessions = data.get("sessions")
         if not isinstance(raw_sessions, dict):
             raise ValueError("weixin peer-sessions.json must contain a sessions object")
         sessions: dict[str, WeixinPeerSession] = {}
@@ -188,7 +196,7 @@ class WeixinSessionStore:
         if not account_id or not peer_id or not token:
             return False
         self._sessions = self._load()
-        timestamp = time.time() if observed_at is None else float(observed_at)
+        timestamp = _resolve_ts(observed_at)
         key = self._key(account_id, peer_id)
         existing = self._sessions.get(key)
         if existing is not None and existing.observed_at >= timestamp:
@@ -215,7 +223,7 @@ class WeixinSessionStore:
         existing = self._sessions.get(key)
         if existing is None:
             return False
-        timestamp = time.time() if invalidated_at is None else float(invalidated_at)
+        timestamp = _resolve_ts(invalidated_at)
         self._sessions[key] = WeixinPeerSession(
             account_id=existing.account_id,
             peer_id=existing.peer_id,
@@ -302,13 +310,11 @@ class WeixinStatusStore:
         """Return current health with a read-time heartbeat freshness check."""
 
         state = self.load()
-        current_time = time.time() if now is None else float(now)
+        current_time = _resolve_ts(now)
         last_ingress_update = float(state.get("last_ingress_update") or 0.0)
-        ingress_age = (
-            max(0.0, current_time - last_ingress_update)
-            if last_ingress_update > 0
-            else 0.0
-        )
+        ingress_age = 0.0
+        if last_ingress_update > 0:
+            ingress_age = max(0.0, current_time - last_ingress_update)
         state["ingress_age_seconds"] = ingress_age
         state["ingress_stale_after_seconds"] = float(ingress_stale_after_seconds)
         if (
@@ -339,7 +345,7 @@ class WeixinStatusStore:
         return self._write(state)
 
     def record_egress_success(self, *, proactive: bool, at: float | None = None) -> dict[str, Any]:
-        timestamp = time.time() if at is None else float(at)
+        timestamp = _resolve_ts(at)
         state = self.load()
         state.update(
             {
@@ -378,7 +384,7 @@ class WeixinStatusStore:
         retry_after_seconds: float = 0.0,
         at: float | None = None,
     ) -> dict[str, Any]:
-        timestamp = time.time() if at is None else float(at)
+        timestamp = _resolve_ts(at)
         state = self.load()
         failure_keys = {
             True: "consecutive_proactive_egress_failures",
@@ -420,7 +426,7 @@ class WeixinStatusStore:
         return self._write(state)
 
     def proactive_circuit_open(self, *, now: float | None = None) -> bool:
-        current_time = time.time() if now is None else float(now)
+        current_time = _resolve_ts(now)
         return float(self.load().get("proactive_circuit_open_until") or 0.0) > current_time
 
     def _write(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -466,9 +472,13 @@ class WeixinStatusStore:
                             """,
                             (now - seconds,),
                         ).fetchone()
-                        samples = int(row[0] or 0) if row else 0
-                        sent = int(row[1] or 0) if row else 0
-                        rate = sent / samples if samples else 0.0
+                        if row is None:
+                            row = (0, 0)
+                        samples = int(row[0] or 0)
+                        sent = int(row[1] or 0)
+                        rate = 0.0
+                        if samples > 0:
+                            rate = sent / samples
                         status_ladder = (
                             (samples < 5, "insufficient_data"),
                             (rate >= 0.95, "met"),
@@ -602,7 +612,7 @@ def split_text_for_weixin(content: str, max_length: int = 2000) -> list[str]:
     chunks: list[str] = []
     current = ""
     for block in content.split("\n\n"):
-        candidate = block if not current else f"{current}\n\n{block}"
+        candidate = "\n\n".join(part for part in (current, block) if part)
         if len(candidate) <= max_length:
             current = candidate
             continue

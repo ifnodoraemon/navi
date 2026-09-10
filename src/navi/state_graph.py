@@ -135,9 +135,12 @@ class StateGraphRunResult:
         return str(self.run_state.terminal_state)
 
     def to_dict(self) -> dict[str, Any]:
+        checker_dict: dict[str, Any] = {}
+        if self.checker_report:
+            checker_dict = self.checker_report.to_dict()
         return {
             "run_state": self.run_state.to_dict(),
-            "checker_report": self.checker_report.to_dict() if self.checker_report else {},
+            "checker_report": checker_dict,
             "resource_grants": [grant.to_dict() for grant in self.resource_grants],
             "harness_results": [result.to_facts() for result in self.harness_results],
             "evidence": dict(self.evidence),
@@ -148,9 +151,12 @@ class StateGraphRunResult:
         run_state = self.run_state.to_dict()
         durable_evidence = run_state.pop("evidence", {})
         run_state["evidence_keys"] = sorted(durable_evidence)
+        checker_dict: dict[str, Any] = {}
+        if self.checker_report:
+            checker_dict = self.checker_report.to_dict()
         return {
             "run_state": run_state,
-            "checker_report": self.checker_report.to_dict() if self.checker_report else {},
+            "checker_report": checker_dict,
             "resource_grants": [grant.to_dict() for grant in self.resource_grants],
             "harness_results": [result.to_facts() for result in self.harness_results],
             "evidence": dict(self.evidence),
@@ -299,7 +305,7 @@ class CapabilityRecoveryPort:
             # objective. The runtime only exposes another bounded planning
             # opportunity; the model owns the semantic recovery decision.
             replan_allowed=state.attempt < spec.retry_policy.max_attempts,
-            reason_code="execution_failed" if retryable else "execution_not_retryable",
+            reason_code={True: "execution_failed", False: "execution_not_retryable"}[retryable],
             facts={
                 "recovery": recovery_facts,
                 "recovery_fact": _encode_recovery_fact("capability_execution_failed", recovery_facts),
@@ -370,9 +376,7 @@ class RecoveryReflectorPort:
             "trigger": "loop.check",
             "reason_code": reason_code,
             "blocked": checker_report.blocked,
-            "failure_domain": (
-                "checker_blocked" if checker_report.blocked else "verification_failed"
-            ),
+            "failure_domain": {True: "checker_blocked", False: "verification_failed"}[checker_report.blocked],
             "loop_run_id": state.run_id,
             "attempt": state.attempt,
             "goal_id": spec.goal_id,
@@ -505,9 +509,33 @@ class SemanticCheckerCallError(RuntimeError):
         self.cause = cause
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _as_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return list(value)
+    return []
+
+
+_COMMUNICATION_OBLIGATION_RULES: dict[bool, str] = {
+    True: (
+        "judge whether the candidate copy communicates the requested grounded "
+        "content within this pre-transport scope"
+    ),
+    False: (
+        "judge whether current capability evidence covers the objective; "
+        "missing candidate copy is not a failure because a passed fact check "
+        "enters the governed response phase"
+    ),
+}
+
+
 def _goal_trigger_facts(spec: LoopSpec) -> dict[str, Any]:
-    value = spec.goal.metadata.get("trigger_facts")
-    return dict(value) if isinstance(value, dict) else {}
+    return _as_dict(spec.goal.metadata.get("trigger_facts"))
 
 
 def _semantic_checker_evaluation_contract(
@@ -515,24 +543,24 @@ def _semantic_checker_evaluation_contract(
     executed: ExecutedCapabilityStep,
 ) -> dict[str, Any]:
     task_context = _goal_task_context(spec)
-    delivery = task_context.get("delivery")
-    delivery_stage = (
-        str(delivery.get("stage") or "")
-        if isinstance(delivery, dict)
-        else ""
-    )
+    delivery = _as_dict(task_context.get("delivery"))
+    delivery_stage = str(delivery.get("stage") or "")
     current_result = _executed_result_text(executed)
     candidate_copy_present = bool(current_result["text"]) and executed.action in {
         "ask",
         "chat",
         "respond",
     }
+    scope_map = {
+        True: "candidate_semantics_before_external_transport",
+        False: "capability_evidence_before_candidate_presentation",
+    }
+    source_map = {
+        True: current_result["source"],
+        False: "",
+    }
     return {
-        "scope": (
-            "candidate_semantics_before_external_transport"
-            if candidate_copy_present
-            else "capability_evidence_before_candidate_presentation"
-        ),
+        "scope": scope_map[candidate_copy_present],
         "evaluates": [
             "objective_coverage",
             "acceptance_criteria",
@@ -546,18 +574,9 @@ def _semantic_checker_evaluation_contract(
         "presentation_semantics": {
             "candidate_copy_role": "proposed_user_facing_communication",
             "candidate_copy_present": candidate_copy_present,
-            "candidate_copy_source": (
-                current_result["source"] if candidate_copy_present else ""
-            ),
+            "candidate_copy_source": source_map[candidate_copy_present],
             "conversation_assistant_is_current_candidate": False,
-            "communication_obligation_rule": (
-                "judge whether the candidate copy communicates the requested grounded "
-                "content within this pre-transport scope"
-                if candidate_copy_present
-                else "judge whether current capability evidence covers the objective; "
-                "missing candidate copy is not a failure because a passed fact check "
-                "enters the governed response phase"
-            ),
+            "communication_obligation_rule": _COMMUNICATION_OBLIGATION_RULES[candidate_copy_present],
             "transport_proof_rule": (
                 "never require an outbox entry, connector send result, or external "
                 "delivery receipt in this check"
@@ -591,14 +610,10 @@ def _semantic_checker_task_context(
 
 def _goal_task_context(spec: LoopSpec) -> dict[str, Any]:
     metadata = spec.goal.metadata
-    raw_context = metadata.get("task_context")
-    context = dict(raw_context) if isinstance(raw_context, dict) else {}
-    raw_lineage = context.get("lineage")
-    lineage = dict(raw_lineage) if isinstance(raw_lineage, dict) else {}
-    raw_progress = context.get("progress")
-    progress = dict(raw_progress) if isinstance(raw_progress, dict) else {}
-    raw_delivery = context.get("delivery")
-    delivery = dict(raw_delivery) if isinstance(raw_delivery, dict) else {}
+    context = _as_dict(metadata.get("task_context"))
+    lineage = _as_dict(context.get("lineage"))
+    progress = _as_dict(context.get("progress"))
+    delivery = _as_dict(context.get("delivery"))
     parent_goal_id = str(metadata.get("parent_goal_id") or "")
     lineage_id = str(lineage.get("id") or parent_goal_id or spec.goal_id)
     prior_items = [
@@ -636,8 +651,7 @@ def _goal_task_context_with_result_comparison(
     executed: ExecutedCapabilityStep,
 ) -> dict[str, Any]:
     context = _goal_task_context(spec)
-    raw_progress = context.get("progress")
-    progress = dict(raw_progress) if isinstance(raw_progress, dict) else {}
+    progress = _as_dict(context.get("progress"))
     prior_items = [
         dict(item)
         for item in progress.get("authoritative_prior_items") or []
@@ -686,7 +700,7 @@ def _result_comparison_facts(
     current_facts: dict[str, Any] = {
         "present": bool(current_text),
         "source": current["source"],
-        "canonical_sha256_16": _text_fingerprint(current_canonical) if current_text else "",
+        "canonical_sha256_16": {True: _text_fingerprint(current_canonical), False: ""}[bool(current_text)],
         "char_count": len(current_text),
         "preview": _result_preview(current_text),
     }
@@ -698,10 +712,9 @@ def _result_comparison_facts(
             continue
         prior_canonical = _canonical_result_text(prior_text)
         exact_duplicate = bool(current_canonical and current_canonical == prior_canonical)
-        similarity = (
-            1.0
-            if exact_duplicate
-            else SequenceMatcher(None, current_canonical, prior_canonical).ratio()
+        similarity = max(
+            float(exact_duplicate),
+            SequenceMatcher(None, current_canonical, prior_canonical).ratio(),
         )
         comparisons.append(
             {
@@ -717,7 +730,7 @@ def _result_comparison_facts(
         )
     max_similarity = max((item["similarity"] for item in comparisons), default=0.0)
     exact_count = sum(1 for item in comparisons if item["exact_duplicate"])
-    latest = comparisons[-1] if comparisons else {}
+    latest = (comparisons[-1:] or [{}])[0]
     most_similar = max(comparisons, key=lambda item: item["similarity"], default={})
     return {
         "current_result": current_facts,
@@ -732,7 +745,7 @@ def _result_comparison_facts(
 
 
 def _executed_result_text(executed: ExecutedCapabilityStep) -> dict[str, str]:
-    facts = executed.facts if isinstance(executed.facts, dict) else {}
+    facts = _as_dict(executed.facts)
     for key in ("responded_message", "message", "body", "text", "result_summary"):
         value = str(facts.get(key) or "").strip()
         if value:
@@ -1042,24 +1055,19 @@ def _bounded_conversation_context(
 
 def _conversation_context_policy(spec: LoopSpec) -> tuple[bool, str]:
     """Keep ambient transcript out of detached background cognition by default."""
-    metadata = spec.goal.metadata if isinstance(spec.goal.metadata, dict) else {}
+    metadata = _as_dict(spec.goal.metadata)
     execution_mode = str(metadata.get("execution_mode") or "")
-    task_context = metadata.get("task_context")
-    progress = (
-        task_context.get("progress")
-        if isinstance(task_context, dict)
-        else {}
-    )
-    ambient_authoritative = bool(
-        progress.get("ambient_history_authoritative", False)
-        if isinstance(progress, dict)
-        else False
-    )
-    if execution_mode == "background" and not ambient_authoritative:
-        return False, "background_ambient_history_not_authoritative"
-    if ambient_authoritative:
-        return True, "task_context_declared_ambient_history_authoritative"
-    return True, "foreground_conversation_continuity"
+    task_context = _as_dict(metadata.get("task_context"))
+    progress = _as_dict(task_context.get("progress"))
+    ambient_authoritative = bool(progress.get("ambient_history_authoritative", False))
+    is_bg = execution_mode == "background"
+    policy_matrix = {
+        (True, False): (False, "background_ambient_history_not_authoritative"),
+        (True, True): (True, "task_context_declared_ambient_history_authoritative"),
+        (False, True): (True, "task_context_declared_ambient_history_authoritative"),
+        (False, False): (True, "foreground_conversation_continuity"),
+    }
+    return policy_matrix[(is_bg, ambient_authoritative)]
 
 
 def _semantic_checker_conversation_context(
@@ -1213,7 +1221,10 @@ def _format_conversation_message(message: Any, *, content: str | None = None) ->
     if raw_role == "assistant":
         role = "ASSISTANT_CANDIDATE_NON_AUTHORITATIVE"
     created_at = float(getattr(message, "created_at", 0.0) or 0.0)
-    body = str(getattr(message, "content", "") if content is None else content)
+    body_val = getattr(message, "content", "")
+    if content is not None:
+        body_val = content
+    body = str(body_val)
     return f"{role} [created_at={created_at:.3f}]:\n{body}"
 
 
@@ -1378,15 +1389,18 @@ class CapabilityExecutorPort:
         workspace: Path,
     ) -> ExecutedCapabilityStep:
         spec_allowed = set(spec.allowed_capabilities)
-        context_allowed = (
-            set(self.context.allowed_tools) if self.context.allowed_tools is not None else None
-        )
+        context_allowed = None
+        if self.context.allowed_tools is not None:
+            context_allowed = set(self.context.allowed_tools)
         effective_allowed = {
             (True, True): None,
             (True, False): context_allowed,
             (False, True): spec_allowed,
             (False, False): spec_allowed & (context_allowed or set()),
         }[("*" in spec_allowed, context_allowed is None)]
+        resource_gateway = None
+        if self.runtime is not None and hasattr(self.runtime.provider, "current_resource_gateway"):
+            resource_gateway = self.runtime.provider.current_resource_gateway()
         registry = CapabilityRegistry(
             home=self.home,
             project_dir=workspace,
@@ -1397,20 +1411,16 @@ class CapabilityExecutorPort:
             governed_run_id=self.governed_run_id or state.run_id,
             sensitive_approval_mode=self.sensitive_approval_mode,
             runtime=self.runtime,
-            resource_gateway=(
-                self.runtime.provider.current_resource_gateway()
-                if self.runtime is not None
-                and hasattr(self.runtime.provider, "current_resource_gateway")
-                else None
-            ),
+            resource_gateway=resource_gateway,
         )
+        default_ws = workspace
+        if self.context.workspace:
+            default_ws = Path(self.context.workspace)
         context = replace(
             self.context,
             workspace=_scope_workspace_for_spec(
                 spec,
-                default_workspace=(
-                    Path(self.context.workspace) if self.context.workspace else workspace
-                ),
+                default_workspace=default_ws,
             ),
             permission_ceiling=spec.goal.permission_ceiling,
             source=self.context.source or "state_graph",
@@ -1472,9 +1482,10 @@ class DurableStateGraphRunner:
         self.home = home
         self.store = LoopRunStore(home)
         self.gateway = gateway
-        self._account_phase_gates = (
-            gateway is None if account_phase_gates is None else account_phase_gates
-        )
+        account_gates = gateway is None
+        if account_phase_gates is not None:
+            account_gates = account_phase_gates
+        self._account_phase_gates = account_gates
         self.harness = harness or Harness(home=home)
         self.checker = checker or DeterministicChecker()
         self.planner_port = planner_port
@@ -1555,7 +1566,9 @@ class DurableStateGraphRunner:
         spec.validate()
         if self.gateway is None:
             self.gateway = GlobalResourceGateway(_resource_limits_for_spec(spec))
-        state = self.store.get_run(run_id) if run_id else None
+        state = None
+        if run_id:
+            state = self.store.get_run(run_id)
         if state is None:
             state = self.store.create_run(spec)
         if state.is_stopped():
@@ -1586,11 +1599,9 @@ class DurableStateGraphRunner:
         grants: list[ResourceGrant] = []
         harness_results: list[HarnessResult] = []
         checker_report: CheckerReport | None = None
-        planned_step = (
-            self._planned_step_from_checkpoint(state.run_id)
-            if state.node == LoopNode.EXECUTE
-            else None
-        )
+        planned_step = None
+        if state.node == LoopNode.EXECUTE:
+            planned_step = self._planned_step_from_checkpoint(state.run_id)
         if planned_step is None and state.node == LoopNode.EXECUTE:
             planned_step = self._planned_step_from_raw(collected_evidence.get("planned_capability"))
         execution_workspace = workspace
@@ -2077,7 +2088,7 @@ class DurableStateGraphRunner:
         if checkpoint is None:
             return None
         inputs = json.loads(checkpoint.inputs_json or "{}")
-        raw = inputs.get("planned_capability") if isinstance(inputs, dict) else None
+        raw = _as_dict(inputs).get("planned_capability")
         return self._planned_step_from_raw(raw)
 
     @staticmethod
@@ -2520,7 +2531,7 @@ class DurableStateGraphRunner:
         executed_step = ExecutedCapabilityStep(
             ok=cap_result.get("ok", False),
             action=str(cap_result.get("action") or ""),
-            facts=cap_result.get("facts", {}) if isinstance(cap_result.get("facts"), dict) else {},
+            facts=_as_dict(cap_result.get("facts")),
             message=str(cap_result.get("message") or ""),
             error_reason=str(cap_result.get("error_reason") or ""),
             terminal=bool(cap_result.get("terminal", False)),
@@ -2529,12 +2540,8 @@ class DurableStateGraphRunner:
             ),
             mutates=bool(cap_result.get("mutates", False)),
         )
-        execution_profile = spec.goal.metadata.get("execution_profile")
-        checker_tier = (
-            str(execution_profile.get("checker_tier") or "")
-            if isinstance(execution_profile, dict)
-            else ""
-        )
+        execution_profile = _as_dict(spec.goal.metadata.get("execution_profile"))
+        checker_tier = str(execution_profile.get("checker_tier") or "")
         for step in spec.verification_ladder:
             if step.kind != VerificationKind.LLM_CHECKER:
                 continue
@@ -2582,16 +2589,13 @@ class DurableStateGraphRunner:
     ) -> tuple[LoopRunState, bool, ResourceGrant]:
         if self.gateway is None:
             raise RuntimeError("StateGraph resource gateway is not initialized")
+        gate = int(bool(self._account_phase_gates))
         grant = self.gateway.request(
             request
             or ResourceRequest(
                 kind=kind,
-                estimated_tokens=_default_phase_tokens(self.gateway.limits)
-                if self._account_phase_gates
-                else 0,
-                estimated_cost=_default_phase_cost(self.gateway.limits)
-                if self._account_phase_gates
-                else 0.0,
+                estimated_tokens=_default_phase_tokens(self.gateway.limits) * gate,
+                estimated_cost=_default_phase_cost(self.gateway.limits) * float(gate),
                 units=1,
                 reserve=self._account_phase_gates,
             )
@@ -3399,12 +3403,9 @@ def _planner_ingress_facts(context: CapabilityContext, spec: LoopSpec) -> dict[s
 
 def _planner_task_context(task_context: dict[str, Any]) -> dict[str, Any]:
     """Project task lineage once without duplicating delivery and result bodies."""
-    lineage = task_context.get("lineage")
-    progress = task_context.get("progress")
-    delivery = task_context.get("delivery")
-    lineage_facts = dict(lineage) if isinstance(lineage, dict) else {}
-    progress_facts = dict(progress) if isinstance(progress, dict) else {}
-    delivery_facts = dict(delivery) if isinstance(delivery, dict) else {}
+    lineage_facts = _as_dict(task_context.get("lineage"))
+    progress_facts = _as_dict(task_context.get("progress"))
+    delivery_facts = _as_dict(task_context.get("delivery"))
     prior_items: list[dict[str, Any]] = []
     for item in progress_facts.get("authoritative_prior_items") or []:
         if not isinstance(item, dict):
@@ -3447,7 +3448,7 @@ def _planner_task_context(task_context: dict[str, Any]) -> dict[str, Any]:
         max_depth=6,
         max_items=30,
     )
-    return bounded if isinstance(bounded, dict) else {}
+    return _as_dict(bounded)
 
 
 def _project_current_state_for_task(
@@ -3564,13 +3565,12 @@ def _project_current_state_for_task(
         "ambient_recent_deliveries",
         [_ambient_delivery(item) for item in ambient_deliveries],
     )
-    lineage = task_context.get("lineage") if isinstance(task_context, dict) else {}
+    lineage = _as_dict(task_context.get("lineage"))
+    progress_dict = _as_dict(progress)
     projected["task_projection_policy"] = {
-        "progress_scope": str(progress.get("scope") or "") if isinstance(progress, dict) else "",
-        "lineage_id": str(lineage.get("id") or "") if isinstance(lineage, dict) else "",
-        "current_goal_id": str(lineage.get("current_goal_id") or "")
-        if isinstance(lineage, dict)
-        else "",
+        "progress_scope": str(progress_dict.get("scope") or ""),
+        "lineage_id": str(lineage.get("id") or ""),
+        "current_goal_id": str(lineage.get("current_goal_id") or ""),
         "ambient_history_authoritative": False,
         "ambient_goal_outcome_count": len(ambient_outcomes),
         "ambient_active_run_count": len(ambient_runs),
@@ -3583,7 +3583,7 @@ def _project_current_state_for_task(
 
 
 def _task_context_lineage_ids(task_context: dict[str, Any]) -> set[str]:
-    lineage = task_context.get("lineage") if isinstance(task_context, dict) else {}
+    lineage = _as_dict(task_context.get("lineage"))
     if not isinstance(lineage, dict):
         return set()
     return {
@@ -3630,14 +3630,13 @@ def _task_run_ids(
         for record in records
         if str(record.get("run_id") or "")
     }
-    progress = task_context.get("progress") if isinstance(task_context, dict) else {}
-    prior_items = progress.get("authoritative_prior_items") if isinstance(progress, dict) else []
-    if isinstance(prior_items, list):
-        run_ids.update(
-            str(item.get("run_id") or "")
-            for item in prior_items
-            if isinstance(item, dict) and str(item.get("run_id") or "")
-        )
+    progress = _as_dict(task_context.get("progress"))
+    prior_items = _as_list(progress.get("authoritative_prior_items"))
+    run_ids.update(
+        str(item.get("run_id") or "")
+        for item in prior_items
+        if isinstance(item, dict) and str(item.get("run_id") or "")
+    )
     return run_ids
 
 
@@ -3777,7 +3776,7 @@ def _planner_loop_spec_facts(spec: LoopSpec) -> dict[str, Any]:
 def _planner_loop_run_facts(state: LoopRunState) -> dict[str, Any]:
     facts = state.to_dict()
     evidence = facts.pop("evidence", {})
-    facts["evidence_keys"] = sorted(evidence) if isinstance(evidence, dict) else []
+    facts["evidence_keys"] = sorted(_as_dict(evidence))
     return facts
 
 
@@ -3789,7 +3788,7 @@ def _planner_objective_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
         {key: value for key, value in evidence.items() if key != "attempt_history"},
         max_characters=24_000,
     )
-    return projected if isinstance(projected, dict) else {}
+    return _as_dict(projected)
 
 
 def _planner_verification_failure_text(evidence: dict[str, Any]) -> str:
@@ -3862,26 +3861,27 @@ def _planner_attempt_history(evidence: dict[str, Any]) -> list[dict[str, Any]]:
         facts = raw.get("facts")
         message = str(raw.get("message") or "").strip()
         candidate_response = _is_candidate_response_attempt(raw)
+        authority_map = {
+            True: "candidate_response_only",
+            False: "declared_capability_observation",
+        }
+        has_preview = bool(candidate_response and message)
+        preview_map = {
+            True: truncate_middle(message, PLANNER_ATTEMPT_MESSAGE_MAX_CHARS),
+            False: "",
+        }
+        facts_dict = {
+            True: {},
+            False: _as_dict(facts),
+        }[candidate_response]
         compact.append(
             {key: value for key, value in raw.items() if key not in {"facts", "message"}}
             | {
-                "evidence_authority": (
-                    "candidate_response_only"
-                    if candidate_response
-                    else "declared_capability_observation"
-                ),
-                "fact_keys": sorted(facts) if isinstance(facts, dict) else [],
-                "facts": (
-                    facts
-                    if not candidate_response and isinstance(facts, dict)
-                    else {}
-                ),
+                "evidence_authority": authority_map[candidate_response],
+                "fact_keys": sorted(_as_dict(facts)),
+                "facts": facts_dict,
                 "message_present": bool(message),
-                "message_preview": (
-                    truncate_middle(message, PLANNER_ATTEMPT_MESSAGE_MAX_CHARS)
-                    if candidate_response and message
-                    else ""
-                ),
+                "message_preview": preview_map[has_preview],
             }
         )
     projected = project_model_facts(
@@ -3891,7 +3891,7 @@ def _planner_attempt_history(evidence: dict[str, Any]) -> list[dict[str, Any]]:
         max_depth=6,
         max_items=30,
     )
-    return projected if isinstance(projected, list) else []
+    return _as_list(projected)
 
 
 def _is_candidate_response_attempt(raw: dict[str, Any]) -> bool:
@@ -3990,7 +3990,7 @@ def _semantic_checker_capability_result(
     checker_result = executed.to_dict()
     checker_result.pop("deterministic_completion_authority", None)
     redacted = redact_secrets_deep(checker_result)
-    return redacted if isinstance(redacted, dict) else {}
+    return _as_dict(redacted)
 
 
 def _semantic_checker_attempt_evidence(evidence: dict[str, Any]) -> list[dict[str, Any]]:
@@ -4001,6 +4001,10 @@ def _semantic_checker_attempt_evidence(evidence: dict[str, Any]) -> list[dict[st
     if not isinstance(history, list):
         return []
     compact: list[dict[str, Any]] = []
+    authority_map = {
+        True: "candidate_response_only",
+        False: "declared_capability_observation",
+    }
     for raw in history[-SEMANTIC_CHECKER_ATTEMPT_LIMIT:]:
         if not isinstance(raw, dict):
             continue
@@ -4009,16 +4013,10 @@ def _semantic_checker_attempt_evidence(evidence: dict[str, Any]) -> list[dict[st
             {
                 "attempt": raw.get("attempt"),
                 "tool": str(raw.get("tool") or ""),
-                "evidence_authority": (
-                    "candidate_response_only"
-                    if candidate_response
-                    else "declared_capability_observation"
-                ),
+                "evidence_authority": authority_map[candidate_response],
                 "args_json": truncate_middle(
                     json.dumps(
-                        redact_secrets_deep(
-                            raw.get("args") if isinstance(raw.get("args"), dict) else {}
-                        ),
+                        redact_secrets_deep(_as_dict(raw.get("args"))),
                         ensure_ascii=False,
                         sort_keys=True,
                         default=str,
@@ -4029,9 +4027,7 @@ def _semantic_checker_attempt_evidence(evidence: dict[str, Any]) -> list[dict[st
                 "action": str(raw.get("action") or ""),
                 "facts_json": truncate_middle(
                     json.dumps(
-                        redact_secrets_deep(
-                            raw.get("facts") if isinstance(raw.get("facts"), dict) else {}
-                        ),
+                        redact_secrets_deep(_as_dict(raw.get("facts"))),
                         ensure_ascii=False,
                         sort_keys=True,
                         default=str,
@@ -4060,16 +4056,18 @@ def _surface_response_required(
     )
     if not surface_available:
         return False
-    metadata = spec.goal.metadata if isinstance(spec.goal.metadata, dict) else {}
+    metadata = _as_dict(spec.goal.metadata)
     loop_kind = str(metadata.get("loop_kind") or "")
     execution_mode = str(metadata.get("execution_mode") or "")
     source = str(metadata.get("source") or "")
-    delivery = (
-        metadata.get("task_context", {}).get("delivery", {})
-        if isinstance(metadata.get("task_context"), dict)
-        else {}
+    task_context = _as_dict(metadata.get("task_context"))
+    delivery = _as_dict(task_context.get("delivery"))
+    delivery_stage = str(delivery.get("stage") or "")
+    return (
+        loop_kind == "turn"
+        or delivery_stage == "post_semantic_acceptance_outbox"
+        or (bool(source) and execution_mode == "foreground")
     )
-    delivery_stage = str(delivery.get("stage") or "") if isinstance(delivery, dict) else ""
     return (
         loop_kind == "turn"
         or delivery_stage == "post_semantic_acceptance_outbox"

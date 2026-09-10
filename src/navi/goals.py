@@ -63,6 +63,22 @@ class Goal:
     next_run_at: float = 0.0
 
 
+def _goal_from_row(row: Any) -> Goal | None:
+    if row:
+        return Goal(*row)
+    return None
+
+
+def _int_cell(row: Any, default: int = 0) -> int:
+    if row:
+        return int(row[0])
+    return default
+
+
+_CRON_FILTER_MAP = {True: "cron_schedule != ''", False: "cron_schedule = ''"}
+_CHILD_FILTER_MAP = {True: "parent_goal_id != ''", False: "parent_goal_id = ''"}
+
+
 @dataclass(frozen=True)
 class GoalEvent:
     id: str
@@ -173,7 +189,7 @@ class GoalStore:
                     """,
                     (goal.parent_goal_id, Phase.PENDING, Phase.RUNNING, Phase.PAUSED),
                 ).fetchone()
-                active_count = int(active[0]) if active else 0
+                active_count = _int_cell(active)
                 if active_count >= child_active_limit:
                     raise ChildAdmissionConflict(
                         "agent.control(operation=spawn) allows at most "
@@ -244,7 +260,7 @@ class GoalStore:
                 """,
                 (goal_id,),
             ).fetchone()
-        return Goal(*row) if row else None
+        return _goal_from_row(row)
 
     def get_by_run(self, run_id: str) -> Goal | None:
         with connect(self.db_path) as conn:
@@ -259,7 +275,7 @@ class GoalStore:
                 """,
                 (run_id,),
             ).fetchone()
-        return Goal(*row) if row else None
+        return _goal_from_row(row)
 
     def list(self, *, phase: str = "", limit: int = 50) -> typing.List[Goal]:
         query_dispatch = {
@@ -339,10 +355,12 @@ class GoalStore:
             clauses.append(f"resolution IN ({placeholders})")
             params.extend(resolution)
         if cron is not None:
-            clauses.append("cron_schedule != ''" if cron else "cron_schedule = ''")
+            clauses.append(_CRON_FILTER_MAP[bool(cron)])
         if child is not None:
-            clauses.append("parent_goal_id != ''" if child else "parent_goal_id = ''")
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+            clauses.append(_CHILD_FILTER_MAP[bool(child)])
+        where = ""
+        if clauses:
+            where = f" WHERE {' AND '.join(clauses)}"
         limit_clause = ""
         if limit is not None:
             limit_clause = " LIMIT ?"
@@ -403,13 +421,15 @@ class GoalStore:
             clauses.append(f"resolution IN ({placeholders})")
             params.extend(resolution)
         if cron is not None:
-            clauses.append("cron_schedule != ''" if cron else "cron_schedule = ''")
+            clauses.append(_CRON_FILTER_MAP[bool(cron)])
         if child is not None:
-            clauses.append("parent_goal_id != ''" if child else "parent_goal_id = ''")
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+            clauses.append(_CHILD_FILTER_MAP[bool(child)])
+        where = ""
+        if clauses:
+            where = f" WHERE {' AND '.join(clauses)}"
         with connect(self.db_path) as conn:
             row = conn.execute(f"SELECT COUNT(*) FROM goals{where}", params).fetchone()
-        return int(row[0]) if row else 0
+        return _int_cell(row)
 
     def list_children(
         self,
@@ -422,7 +442,8 @@ class GoalStore:
         resolutions: tuple[str, ...] = (),
     ) -> typing.List[Goal]:
         """List child goals of *parent_goal_id*."""
-        order = "DESC" if newest else "ASC"
+        order_map = {True: "DESC", False: "ASC"}
+        order = order_map[bool(newest)]
         clauses = ["parent_goal_id = ?"]
         params: list[Any] = [parent_goal_id]
         if created_after > 0:
@@ -450,7 +471,9 @@ class GoalStore:
                 params,
             ).fetchall()
         goals = [Goal(*row) for row in rows]
-        return list(reversed(goals)) if newest else goals
+        if newest:
+            return list(reversed(goals))
+        return goals
 
     def count_children(
         self,
@@ -469,7 +492,7 @@ class GoalStore:
                 f"SELECT COUNT(*) FROM goals WHERE {' AND '.join(clauses)}",
                 params,
             ).fetchone()
-        return int(row[0]) if row else 0
+        return _int_cell(row)
 
     # Events that encode durable constraint state and must survive context
     # compression. Pending approvals, denials, rejections, and
@@ -603,7 +626,7 @@ class GoalStore:
                 f"SELECT COUNT(*) FROM goal_events WHERE {' AND '.join(clauses)}",
                 params,
             ).fetchone()
-        return int(row[0]) if row else 0
+        return _int_cell(row)
 
     def attach_trace(
         self,
@@ -660,14 +683,14 @@ class GoalStore:
         goal = self.get(goal_id)
         if goal is None:
             return None
-        next_phase = goal.phase if phase is None else phase
-        next_governance = goal.governance if governance is None else governance
-        next_acceptance = goal.acceptance if acceptance is None else acceptance
-        next_resolution = goal.resolution if resolution is None else resolution
-        next_task_status = goal.task_status if task_status is None else task_status
+        next_phase = phase or goal.phase
+        next_governance = governance or goal.governance
+        next_acceptance = acceptance or goal.acceptance
+        next_resolution = resolution or goal.resolution
+        next_task_status = task_status or goal.task_status
         merged_evidence = _merge_evidence(goal.evidence_json, evidence)
         now = time.time()
-        completed_at = now if next_phase == Phase.ENDED else 0.0
+        completed_at = now * float(next_phase == Phase.ENDED)
         with connect(self.db_path) as conn:
             conn.execute(
                 """
@@ -896,7 +919,7 @@ class GoalStore:
                 transport_context=transport_context,
             )
         )
-        return items[0] if items else None
+        return next(iter(items), None)
 
     def _delivery_outbox_by_run(self, run_id: str) -> DeliveryItem | None:
         return DeliveryOutboxStore(self.home).latest_for_run(run_id)
@@ -938,10 +961,13 @@ class GoalStore:
         if goal is None:
             return None
         recorded_at = time.time()
+        sent_at_val = recorded_at
+        if sent_at is not None:
+            sent_at_val = float(sent_at)
         evidence = {
             "state_transition": "delivered",
             "channel": channel,
-            "sent_at": recorded_at if sent_at is None else float(sent_at),
+            "sent_at": sent_at_val,
             "recorded_at": recorded_at,
             "text_preview": text_preview,
             "text_length": max(0, int(text_length)),
@@ -966,7 +992,7 @@ class GoalStore:
             governance=Governance.NONE,
             acceptance=Acceptance.ACCEPTED,
             resolution=Resolution.SUCCESS,
-            result_summary=(current_run.result_summary if current_run else "") or text_preview,
+            result_summary=getattr(current_run, "result_summary", "") or text_preview,
             error="",
         )
         if updated_run is not None:
@@ -1082,7 +1108,9 @@ class GoalStore:
         from .loop_runs import LoopRunStore
 
         loop_runs = LoopRunStore(self.home)
-        candidate_ids = {delivery_id} if delivery_id else set()
+        candidate_ids = set()
+        if delivery_id:
+            candidate_ids.add(delivery_id)
         for loop_run in loop_runs.list_by_goal_filtered(
             goal_id,
             terminal_states=(LoopTerminalState.PAUSED,),
@@ -1128,14 +1156,22 @@ class GoalStore:
             "transport_envelope_goal_id": goal_id,
             "origin_goal_id": str(evidence.get("goal_id") or ""),
         }
+        acc_map = {True: Acceptance.ACCEPTED, False: Acceptance.REJECTED}
+        res_map = {True: Resolution.SUCCESS, False: Resolution.FAILED}
+        summary_val = ""
+        if success:
+            summary_val = current.result_summary
+        err_val = ""
+        if not success:
+            err_val = str(evidence.get("error") or "delivery failed")
         updated = runs.update_run(
             current.id,
             phase=Phase.ENDED,
             governance=Governance.NONE,
-            acceptance=Acceptance.ACCEPTED if success else Acceptance.REJECTED,
-            resolution=Resolution.SUCCESS if success else Resolution.FAILED,
-            result_summary=current.result_summary if success else "",
-            error="" if success else str(evidence.get("error") or "delivery failed"),
+            acceptance=acc_map[bool(success)],
+            resolution=res_map[bool(success)],
+            result_summary=summary_val,
+            error=err_val,
         )
         if updated is not None:
             self.update_for_run(updated, evidence=envelope_evidence)
@@ -1150,7 +1186,9 @@ class GoalStore:
                 """,
                 (goal_id,),
             ).fetchone()
-        return _json_object(row[0]) if row else {}
+        if row:
+            return _json_object(row[0])
+        return {}
 
     def list_recent_deliveries(
         self,
@@ -1202,7 +1240,7 @@ class GoalStore:
                 """,
                 (objective, cron_schedule, source, peer_id, sender_id, Phase.ENDED),
             ).fetchone()
-        return Goal(*row) if row else None
+        return _goal_from_row(row)
 
     def find_active_cron_goal_by_schedule(
         self,
@@ -1234,7 +1272,7 @@ class GoalStore:
                 """,
                 params,
             ).fetchone()
-        return Goal(*row) if row else None
+        return _goal_from_row(row)
 
     def list_cron_goals(self) -> builtins.list[Goal]:
         with connect(self.db_path) as conn:
@@ -1302,15 +1340,16 @@ class GoalStore:
                 ),
             )
         updated = self.get(goal_id)
+        target_goal = updated or goal
         self.record_event(
             goal_id,
             event_type,
-            phase=updated.phase if updated else goal.phase,
-            governance=updated.governance if updated else goal.governance,
-            acceptance=updated.acceptance if updated else goal.acceptance,
-            resolution=updated.resolution if updated else goal.resolution,
-            run_id=updated.run_id if updated else goal.run_id,
-            trace_id=updated.trace_id if updated else goal.trace_id,
+            phase=target_goal.phase,
+            governance=target_goal.governance,
+            acceptance=target_goal.acceptance,
+            resolution=target_goal.resolution,
+            run_id=target_goal.run_id,
+            trace_id=target_goal.trace_id,
             evidence=evidence or {},
         )
         return updated
@@ -1413,7 +1452,8 @@ def _goal_state_for_run(
     if run.phase == Phase.ENDED and run.resolution == Resolution.SUCCESS:
         return (Phase.ENDED, Governance.NONE, Acceptance.ACCEPTED, Resolution.SUCCESS)
     if run.phase == Phase.ENDED:
-        acceptance = Acceptance.REJECTED if run.resolution == Resolution.FAILED else Acceptance.NONE
+        acceptance_map = {True: Acceptance.REJECTED, False: Acceptance.NONE}
+        acceptance = acceptance_map[run.resolution == Resolution.FAILED]
         return (Phase.ENDED, Governance.NONE, acceptance, run.resolution)
     if run.governance == Governance.AWAITING_APPROVAL:
         return (Phase.RUNNING, Governance.AWAITING_APPROVAL, Acceptance.NONE, Resolution.NONE)
@@ -1439,7 +1479,9 @@ def _json_object(raw: str) -> dict[str, Any]:
         value = json.loads(raw or "{}")
     except json.JSONDecodeError:
         return {}
-    return value if isinstance(value, dict) else {}
+    if isinstance(value, dict):
+        return value
+    return {}
 
 
 def _delivery_error_reason(error: str) -> str:
@@ -1447,7 +1489,11 @@ def _delivery_error_reason(error: str) -> str:
     prefix = text.partition(":")[0].strip()
     if prefix.startswith("connector_"):
         return prefix
-    return "connector_delivery_failed" if error else ""
+    delivery_err_map = {
+        True: "connector_delivery_failed",
+        False: "",
+    }
+    return delivery_err_map[bool(error)]
 
 
 GOALS_TABLE = Table(

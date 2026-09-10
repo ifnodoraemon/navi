@@ -41,11 +41,9 @@ class IntentAgent:
 
     async def _on_message_ingress(self, event: NaviEvent) -> None:
         assert isinstance(event, MessageIngressEvent)
-        session_id = (
-            self.runtime.memory.current_session_id(event.session_alias)
-            if event.session_alias
-            else ""
-        )
+        session_id = ""
+        if event.session_alias:
+            session_id = self.runtime.memory.current_session_id(event.session_alias)
         state = CurrentStateBuilder(self.home).build(
             SurfaceContext(
                 home=self.home,

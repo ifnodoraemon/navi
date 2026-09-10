@@ -39,6 +39,27 @@ class ToolCapability:
         context: CapabilityContext,
     ) -> CapabilityResult:
         call_args = dict(args)
+        if self.spec.context_policy == "capability_catalog":
+            if self.capability_registry is None:
+                return CapabilityResult(
+                    ok=False,
+                    action="tool",
+                    facts={CAPABILITY_ERROR_REASON_KEY: "runtime_context_unavailable"},
+                    error_reason="runtime_context_unavailable",
+                )
+            specs = self.capability_registry.planner_specs()
+            return CapabilityResult(
+                ok=True,
+                action="tool",
+                facts=tool_catalog_facts(
+                    specs,
+                    definition=(
+                        "declared capability catalog; concrete calls remain policy- and "
+                        "approval-gated"
+                    ),
+                    unavailable=self.gateway.list_unavailable(),
+                ),
+            )
         if self.spec.context_policy == "actor_memory":
             from navi.memory.scopes import memory_scopes_for_context
 
@@ -61,29 +82,8 @@ class ToolCapability:
                 "trace_id": context.trace_id,
                 "input_text": context.input_text,
             }
-        elif self.spec.context_policy == "skill_catalog":
+        if self.spec.context_policy == "skill_catalog":
             call_args["_skill_permission_ceiling"] = context.skill_permission_ceiling
-        elif self.spec.context_policy == "capability_catalog":
-            if self.capability_registry is None:
-                return CapabilityResult(
-                    ok=False,
-                    action="tool",
-                    facts={CAPABILITY_ERROR_REASON_KEY: "runtime_context_unavailable"},
-                    error_reason="runtime_context_unavailable",
-                )
-            specs = self.capability_registry.planner_specs()
-            return CapabilityResult(
-                ok=True,
-                action="tool",
-                facts=tool_catalog_facts(
-                    specs,
-                    definition=(
-                        "declared capability catalog; concrete calls remain policy- and "
-                        "approval-gated"
-                    ),
-                    unavailable=self.gateway.list_unavailable(),
-                ),
-            )
         if self.spec.workspace_scope == "context":
             call_args["_workspace_root"] = context.workspace
         audit_run_id = ""
@@ -92,7 +92,7 @@ class ToolCapability:
         audit_run_id = audit_run_id or context.loop_run_id
         if not audit_run_id and context.approved_approval_id:
             approval = RunStore(context.home).get_approval(context.approved_approval_id)
-            audit_run_id = approval.run_id if approval is not None else ""
+            audit_run_id = getattr(approval, "run_id", "")
         result = await self.gateway.call(
             self.spec.name,
             call_args,
@@ -119,10 +119,13 @@ class ToolCapability:
         }
         if error_reason:
             payload[CAPABILITY_ERROR_REASON_KEY] = error_reason
+        message = result.message or ""
+        if not message and not result.ok:
+            message = result.error or ""
         return CapabilityResult(
             ok=result.ok,
             action=result.action,
-            message=result.message if result.message else (result.error if not result.ok else ""),
+            message=message,
             terminal=result.terminal,
             yields_control=result.yields_control,
             facts=facts,

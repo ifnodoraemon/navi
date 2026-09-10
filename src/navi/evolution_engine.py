@@ -46,7 +46,9 @@ class EvolutionEngine:
                 "evolution proposal baseline changed while apply was being claimed"
             )
         snapshot = getattr(adapter, "snapshot", None)
-        rollback_state = snapshot(proposal.target_id) if callable(snapshot) else current
+        rollback_state = current
+        if callable(snapshot):
+            rollback_state = snapshot(proposal.target_id)
         event = self.ledger.record_apply_event(proposal, rollback_state=rollback_state)
         try:
             adapter.apply(proposal.target_id, proposal.after)

@@ -261,10 +261,12 @@ def test_fact_response_facts_use_the_same_bounded_projection() -> None:
 
 
 def _reflection_evidence(*, accepted: bool, summary: str, attempt: int = 3) -> dict:
+    reason_code = {True: "", False: "semantic_check_failed"}[accepted]
+    severity = {True: "INFO", False: "ERROR"}[accepted]
     return {
         "reflection": {
             "replan_allowed": not accepted,
-            "reason_code": "" if accepted else "semantic_check_failed",
+            "reason_code": reason_code,
             "facts": {
                 "recovery": {
                     "attempt": attempt,
@@ -276,8 +278,8 @@ def _reflection_evidence(*, accepted: bool, summary: str, attempt: int = 3) -> d
                             {
                                 "name": "objective_check",
                                 "passed": accepted,
-                                "severity": "INFO" if accepted else "ERROR",
-                                "reason": "" if accepted else "semantic_check_failed",
+                                "severity": severity,
+                                "reason": reason_code,
                                 "evidence": {
                                     "evidence_summary": summary,
                                     "evaluator_role": "checker",

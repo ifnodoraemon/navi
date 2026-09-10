@@ -366,6 +366,9 @@ class AgentCollectCapability(BaseCapability):
         child = _child_for_parent(store, parent=parent, args=args)
         state = _child_state(self.home, child)
         reports = _agent_reports(store, child.id)
+        latest_report: dict[str, Any] = {}
+        if reports:
+            latest_report = reports[-1]
         facts = {
             "entity_type": "agent",
             "entity_id": child.id,
@@ -376,7 +379,7 @@ class AgentCollectCapability(BaseCapability):
             "completion_evidence": state["completion_evidence"],
             "child": state,
             "reports": reports,
-            "latest_report": reports[-1] if reports else {},
+            "latest_report": latest_report,
         }
         return _fact_result("agent", facts, run_id=child.run_id)
 
@@ -577,7 +580,9 @@ def _child_capability_envelope(
             "agent.control(operation=spawn) requires an explicit capability registry."
         )
     parent_allowed = set(parent_spec.allowed_capabilities)
-    context_allowed = set(context.allowed_tools) if context.allowed_tools is not None else None
+    context_allowed = None
+    if context.allowed_tools is not None:
+        context_allowed = set(context.allowed_tools)
     eligible: set[str] = set()
     for spec in registry.planner_specs():
         if not spec.delegation_allowed:
@@ -605,10 +610,23 @@ def _child_capability_envelope(
 def _child_state(home: Path, child: Goal) -> dict[str, Any]:
     runs = RunStore(home)
     service = LoopControlService(home)
-    run = runs.get(child.run_id) if child.run_id else None
+    run = None
+    if child.run_id:
+        run = runs.get(child.run_id)
     loop_runs = service.loop_runs.list_by_goal(child.id, limit=1)
-    loop_run = loop_runs[0] if loop_runs else None
-    terminal_state = str(loop_run.terminal_state or "") if loop_run else ""
+    loop_run = next(iter(loop_runs), None)
+    terminal_state = ""
+    loop_run_id = ""
+    loop_node = ""
+    if loop_run is not None:
+        terminal_state = str(loop_run.terminal_state or "")
+        loop_run_id = loop_run.run_id
+        loop_node = str(loop_run.node)
+    result_summary = ""
+    run_error = ""
+    if run is not None:
+        result_summary = str(run.result_summary or "")
+        run_error = str(run.error or "")
     completion_evidence = bool(
         child.phase == Phase.ENDED
         and terminal_state == str(LoopTerminalState.CONVERGED)
@@ -620,17 +638,17 @@ def _child_state(home: Path, child: Goal) -> dict[str, Any]:
         "parent_goal_id": child.parent_goal_id,
         "objective": child.objective,
         "run_id": child.run_id,
-        "loop_run_id": loop_run.run_id if loop_run else "",
+        "loop_run_id": loop_run_id,
         "phase": child.phase,
         "governance": child.governance,
         "acceptance": child.acceptance,
         "resolution": child.resolution,
         "task_status": child.task_status,
-        "loop_node": str(loop_run.node) if loop_run else "",
+        "loop_node": loop_node,
         "loop_terminal_state": terminal_state,
-        "result_summary": str(run.result_summary or "") if run else "",
+        "result_summary": result_summary,
         "result_summary_provenance": "assistant_candidate_non_authoritative",
-        "error": str(run.error or "") if run else "",
+        "error": run_error,
         "completion_evidence": completion_evidence,
         "created_at": child.created_at,
         "updated_at": child.updated_at,
@@ -646,7 +664,9 @@ def _agent_reports(store: GoalStore, child_goal_id: str) -> list[dict[str, Any]]
             evidence = json.loads(event.evidence_json or "{}")
         except json.JSONDecodeError:
             evidence = {}
-        report = evidence.get("report") if isinstance(evidence, dict) else None
+        report = None
+        if isinstance(evidence, dict):
+            report = evidence.get("report")
         if isinstance(report, dict):
             reports.append(
                 {
@@ -663,7 +683,8 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, str):
-        return (value.strip(),) if value.strip() else ()
+        parts = [p for p in (value.strip(),) if p]
+        return tuple(parts)
     if isinstance(value, list | tuple):
         return tuple(str(item).strip() for item in value if str(item).strip())
     return ()
@@ -700,7 +721,9 @@ def _intersect_budget(
     parent_limit: int,
 ) -> int:
     requested = _bounded_positive_int(value, default=default, upper=system_limit)
-    return min(requested, parent_limit) if parent_limit > 0 else requested
+    if parent_limit > 0:
+        return min(requested, parent_limit)
+    return requested
 
 
 def _intersect_float_budget(
@@ -715,4 +738,6 @@ def _intersect_float_budget(
     except (TypeError, ValueError):
         requested = default
     requested = max(0.01, min(requested, system_limit))
-    return min(requested, parent_limit) if parent_limit > 0 else requested
+    if parent_limit > 0:
+        return min(requested, parent_limit)
+    return requested

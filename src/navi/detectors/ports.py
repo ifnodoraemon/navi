@@ -28,7 +28,9 @@ class PortEventDetector:
         state_updates: dict[str, Any] = {}
         project_data = context.project_data
         watchers = project_data.get("watchers")
-        dev_ports = watchers.get("ports", []) if isinstance(watchers, dict) else []
+        dev_ports = []
+        if isinstance(watchers, dict):
+            dev_ports = watchers.get("ports", [])
         if not dev_ports:
             return events, state_updates
 

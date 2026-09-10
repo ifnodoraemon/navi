@@ -112,7 +112,9 @@ class Result(Generic[T]):
         raise self.error or RuntimeError("result failed without error")
 
     def unwrap_or(self, default: T) -> T:
-        return cast(T, self.value) if self.ok else default
+        if self.ok:
+            return cast(T, self.value)
+        return default
 
 
 # ----------------------------------------------------------------- @guarded

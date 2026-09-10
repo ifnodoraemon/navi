@@ -72,11 +72,10 @@ class _TwoGateShellProvider:
     async def complete_for(self, role: str, messages: list[ChatMessage], **kwargs) -> str:
         self.calls.append(role)
         assert role == "planner"
-        command = (
-            ["definitely-missing-navi-test-command"]
-            if len(self.calls) == 1
-            else ["another-missing-navi-test-command"]
-        )
+        commands = {
+            1: ["definitely-missing-navi-test-command"],
+        }
+        command = commands.get(len(self.calls), ["another-missing-navi-test-command"])
         return json.dumps(
             {
                 "syscalls": [

@@ -97,6 +97,10 @@ def _context_search(home: Path, args: dict[str, Any]) -> ToolResult:
         ),
     )[:max_items]
 
+    sorted_scopes: list[str] = []
+    if allowed_scopes is not None:
+        sorted_scopes = sorted(allowed_scopes)
+
     return ToolResult(
         tool="context.search",
         ok=True,
@@ -108,7 +112,7 @@ def _context_search(home: Path, args: dict[str, Any]) -> ToolResult:
             "time_hint": str(args.get("time_hint") or "").strip(),
             "scope_hint": str(args.get("scope_hint") or "").strip(),
             "identity": context,
-            "allowed_scopes": sorted(allowed_scopes) if allowed_scopes is not None else [],
+            "allowed_scopes": sorted_scopes,
             "evidence": ordered,
             "evidence_ids": [str(item["evidence_id"]) for item in ordered],
             "count": len(ordered),
@@ -258,7 +262,9 @@ def _put_evidence(target: dict[str, dict[str, Any]], item: dict[str, Any]) -> No
 
 def _context_args(args: dict[str, Any]) -> dict[str, str]:
     raw = args.get("_context")
-    raw_context = raw if isinstance(raw, dict) else {}
+    raw_context = {}
+    if isinstance(raw, dict):
+        raw_context = raw
     return {
         "source": str(raw_context.get("source") or "").strip(),
         "peer_id": str(raw_context.get("peer_id") or "").strip(),
@@ -278,7 +284,10 @@ def _allowed_scopes(args: dict[str, Any]) -> set[str] | None:
 
 def _string_list(raw: object) -> list[str]:
     if isinstance(raw, str):
-        return [raw.strip()] if raw.strip() else []
+        cleaned = raw.strip()
+        if not cleaned:
+            return []
+        return [cleaned]
     if not isinstance(raw, list):
         return []
     return [str(item).strip() for item in raw if str(item).strip()]

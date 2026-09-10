@@ -68,13 +68,16 @@ def _file_write(args: dict[str, Any], *, project_dir: Path, home: Path | None = 
             reason=str(args.get("checkpoint_reason") or "file.write overwrite"),
         )
     lock = None
-    harness = Harness(home=home) if home is not None else None
+    harness = None
+    if home is not None:
+        harness = Harness(home=home)
     target_path = path
     shadow_path = ""
     if shadow_run_id:
         if harness is None:
             return ToolResult(tool="file.write", ok=False, error="shadow writes require home")
-        shadow = harness.getshadow_workspace(shadow_run_id) if hasattr(harness, "getshadow_workspace") else harness.get_shadow_workspace(shadow_run_id)
+        shadow_fetcher = getattr(harness, "getshadow_workspace", harness.get_shadow_workspace)
+        shadow = shadow_fetcher(shadow_run_id)
         if shadow is None or shadow.status != "active":
             return ToolResult(tool="file.write", ok=False, error="active shadow workspace not found")
         rel_path = _lock_resource(path, project_dir=project_dir)
@@ -112,7 +115,9 @@ def _file_write(args: dict[str, Any], *, project_dir: Path, home: Path | None = 
             )
     try:
         try:
-            before_size = target_path.stat().st_size if target_path.exists() else 0
+            before_size = 0
+            if target_path.exists():
+                before_size = target_path.stat().st_size
             write_handlers = {
                 "append": lambda: target_path.open("a", encoding="utf-8").write(content),
                 "overwrite": lambda: target_path.write_text(content, encoding="utf-8"),
@@ -137,7 +142,7 @@ def _file_write(args: dict[str, Any], *, project_dir: Path, home: Path | None = 
                 "before_size": before_size,
                 "after_size": after_size,
                 "checkpoint_id": checkpoint_id or "",
-                "workspace_lock": lock.to_dict() if lock is not None else {},
+                "workspace_lock": _lock_payload(lock),
             },
         )
     finally:
@@ -177,7 +182,9 @@ def _python_ast_replace_symbol(
             ok=False,
             error="python.ast.replace_symbol requires a .py file",
         )
-    harness = Harness(home=home) if home is not None else None
+    harness = None
+    if home is not None:
+        harness = Harness(home=home)
     target_path = path
     shadow_path = ""
     if shadow_run_id:
@@ -320,7 +327,7 @@ def _python_ast_replace_symbol(
                         "turn_scope": "current",
                         "path": str(path),
                         "shadow_path": shadow_path,
-                        "workspace_lock": lock.to_dict() if lock is not None else {},
+                        "workspace_lock": _lock_payload(lock),
                     },
                     error="file changed before AST patch write",
                 )
@@ -335,7 +342,9 @@ def _python_ast_replace_symbol(
             facts={
                 "entity_type": "python_symbol",
                 "entity_id": f"{path}:{symbol_name}",
-                "state_transition": "shadow_ast_replaced" if shadow_run_id else "ast_replaced",
+                "state_transition": {True: "shadow_ast_replaced", False: "ast_replaced"}[
+                    bool(shadow_run_id)
+                ],
                 "turn_scope": "current",
                 "path": str(path),
                 "shadow_path": shadow_path,
@@ -346,7 +355,7 @@ def _python_ast_replace_symbol(
                 "end_line": end_line,
                 "before_size": before_size,
                 "after_size": after_size,
-                "workspace_lock": lock.to_dict() if lock is not None else {},
+                "workspace_lock": _lock_payload(lock),
             },
         )
     finally:
@@ -399,12 +408,13 @@ def _symbol_start_line(node: ast.AST) -> int:
     decorators = getattr(node, "decorator_list", ())
     lines.extend(int(getattr(item, "lineno", 0) or 0) for item in decorators)
     positive = [line for line in lines if line > 0]
-    return min(positive) if positive else 0
+    return min(positive, default=0)
 
 
 def _indent_replacement(replacement: str, indent: str) -> str:
     lines = replacement.splitlines()
-    return "".join(f"{indent}{line}\n" if line else "\n" for line in lines)
+    indent_lookup = {True: indent, False: ""}
+    return "".join(f"{indent_lookup[bool(line)]}{line}\n" for line in lines)
 
 
 def _ast_error_facts(path: Path, shadow_path: str, exc: SyntaxError) -> dict[str, Any]:
@@ -448,13 +458,14 @@ class _CheckpointStore:
 
         from .run_command import _run_git
 
-        cwd = path.parent if path.is_file() else path
+        cwd_table = {True: path.parent, False: path}
+        cwd = cwd_table[path.is_file()]
         # ``git stash create`` returns a stash ref without touching the
         # working tree or switching branches. If there is nothing to
         # stash (clean tree), it returns empty — we still record a
         # checkpoint id so callers have a stable handle.
         stash = _run_git(cwd, "stash", "create")
-        stash_ref = stash["stdout"].strip() if stash["stdout"] else ""
+        stash_ref = str(stash.get("stdout") or "").strip()
         checkpoint_id = uuid.uuid4().hex
         meta = {
             "checkpoint_id": checkpoint_id,
@@ -517,7 +528,21 @@ def _lock_resource(path: Path, *, project_dir: Path) -> str:
         return str(path.resolve())
 
 
+def _lock_payload(lock: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    if lock is not None:
+        payload = lock.to_dict()
+    return payload
+
+
+_WRITE_TRANSITIONS = {
+    (True, "append"): "shadow_appended",
+    (True, "overwrite"): "shadow_written",
+    (False, "append"): "appended",
+    (False, "overwrite"): "written",
+}
+
+
 def _write_transition(mode: str, *, shadow: bool) -> str:
-    if shadow:
-        return "shadow_appended" if mode == "append" else "shadow_written"
-    return "appended" if mode == "append" else "written"
+    fallback = {True: "shadow_written", False: "written"}[bool(shadow)]
+    return _WRITE_TRANSITIONS.get((bool(shadow), mode), fallback)

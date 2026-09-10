@@ -62,9 +62,10 @@ class ConnectorIngressDeduplicator:
                     seen[key] = now + self.ttl_seconds
                 _atomic_json_write(self.path, seen)
                 if duplicate_key:
+                    reason = {True: "message_id", False: "content"}[duplicate_key.startswith("id:")]
                     return ConnectorDedupResult(
                         True,
-                        reason="message_id" if duplicate_key.startswith("id:") else "content",
+                        reason=reason,
                         key=duplicate_key,
                     )
                 return ConnectorDedupResult(False)

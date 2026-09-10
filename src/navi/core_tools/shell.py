@@ -50,21 +50,24 @@ def _shell_run(args: dict[str, Any], *, project_dir: Path, home: Path | None = N
     allocate_pty = bool(args.get("allocate_pty"))
     shell_policy = shell_call_policy({"command": command, "allocate_pty": allocate_pty})
     requires_network = bool(shell_policy.get("requires_network"))
+    sandbox_home = None
+    if home is not None:
+        sandbox_home = home / "sandbox-home"
     result = _run_command(
         command,
         cwd=cwd,
         timeout=timeout,
         allocate_pty=allocate_pty,
         sandbox_workspace=project_dir,
-        sandbox_home=None if home is None else home / "sandbox-home",
+        sandbox_home=sandbox_home,
         workspace_writable=shell_policy["required_permission"] == "write",
         network_allowed=shell_policy["required_permission"] == "network" or requires_network,
         host_process_visibility=shell_policy["observation_scope"] == "host_process_table",
         read_only_binds=_connector_media_binds(home, project_dir),
     )
     observation_scope = str(shell_policy["observation_scope"])
-    evidence_contract = (
-        {
+    evidence_contracts = {
+        "host_process_table": {
             "scope": "host_process_table",
             "establishes": ["process_presence", "sampled_process_state"],
             "does_not_establish": [
@@ -73,15 +76,30 @@ def _shell_run(args: dict[str, Any], *, project_dir: Path, home: Path | None = N
                 "task_completion",
             ],
             "sampling": "single_command_execution",
-        }
-        if observation_scope == "host_process_table"
-        else {
+        },
+    }
+    evidence_contract = evidence_contracts.get(
+        observation_scope,
+        {
             "scope": "isolated_workspace_command",
             "establishes": ["command_result"],
             "does_not_establish": [],
             "sampling": "single_command_execution",
-        }
+        },
     )
+    observation_semantics_map = {
+        "host_process_table": (
+            "process rows prove process presence and sampled state only; "
+            "they do not by themselves prove task progress or completion"
+        ),
+    }
+    observation_semantics = observation_semantics_map.get(
+        observation_scope,
+        "command output is scoped to the isolated workspace sandbox",
+    )
+    error_reason = ""
+    if result["exit_code"] != 0:
+        error_reason = str(result.get("error_reason") or "")
     return ToolResult(
         tool="shell.run",
         ok=result["exit_code"] == 0,
@@ -98,13 +116,8 @@ def _shell_run(args: dict[str, Any], *, project_dir: Path, home: Path | None = N
             "requires_network": requires_network,
             "observation_scope": observation_scope,
             "evidence_contract": evidence_contract,
-            "observation_semantics": (
-                "process rows prove process presence and sampled state only; "
-                "they do not by themselves prove task progress or completion"
-                if observation_scope == "host_process_table"
-                else "command output is scoped to the isolated workspace sandbox"
-            ),
+            "observation_semantics": observation_semantics,
         },
         error=result["stderr"],
-        error_reason=str(result.get("error_reason") or "") if result["exit_code"] != 0 else "",
+        error_reason=error_reason,
     )

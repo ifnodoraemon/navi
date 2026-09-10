@@ -90,10 +90,11 @@ class ApprovalRequestCapability(BaseCapability):
             error="",
         )
 
+        transition_map = {True: "created", False: "existing"}
         facts = {
             "entity_type": "approval_request",
             "entity_id": approval.id,
-            "state_transition": "created" if existing is None else "existing",
+            "state_transition": transition_map[existing is None],
             "turn_scope": "current",
             "run_id": run_id,
             "status": APPROVAL_STATUS_PENDING,
@@ -147,6 +148,9 @@ class ApprovalResolveCapability(BaseCapability):
             resume_loop=resume_goal_loop_run,
         )
         facts = resolved.facts
+        error_reason = ""
+        if not resolved.ok:
+            error_reason = _approval_error_reason(facts)
         delivery = connector_delivery_from_facts(facts)
         if delivery is not None:
             return CapabilityResult(
@@ -156,7 +160,7 @@ class ApprovalResolveCapability(BaseCapability):
                 run_id=str(facts.get("run_id") or ""),
                 facts=facts,
                 terminal=False,
-                error_reason="" if resolved.ok else _approval_error_reason(facts),
+                error_reason=error_reason,
                 yields_control=True,
             )
         continuation_response = str(facts.get("continuation_response") or "").strip()
@@ -168,7 +172,7 @@ class ApprovalResolveCapability(BaseCapability):
                 run_id=str(facts.get("run_id") or ""),
                 facts=facts,
                 terminal=True,
-                error_reason="" if resolved.ok else _approval_error_reason(facts),
+                error_reason=error_reason,
                 yields_control=False,
             )
         # A continuation may be paused on a gate owned by the original
@@ -181,7 +185,7 @@ class ApprovalResolveCapability(BaseCapability):
             run_id=str(facts.get("run_id") or ""),
             facts=facts,
             terminal=_approval_failure_is_terminal(facts),
-            error_reason="" if resolved.ok else _approval_error_reason(facts),
+            error_reason=error_reason,
             yields_control=False,
         )
 

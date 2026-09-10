@@ -137,7 +137,9 @@ class EvolutionExperimentStore:
             checks.append({"check": "eval_cases_declared", "passed": False})
         for case_id in eval_cases:
             checks.extend(self._evaluate_case(case_id, proposal.target_type, proposal.after))
-        status = "passed" if checks and all(bool(item.get("passed")) for item in checks) else "failed"
+        all_passed = bool(checks and all(bool(item.get("passed")) for item in checks))
+        status_map = {True: "passed", False: "failed"}
+        status = status_map[all_passed]
         experiment = EvolutionExperiment(
             id=uuid.uuid4().hex,
             proposal_id=proposal.id,
@@ -216,7 +218,9 @@ class EvolutionExperimentStore:
                 """,
                 (proposal_id,),
             ).fetchone()
-        return EvolutionExperiment(*row) if row else None
+        if not row:
+            return None
+        return EvolutionExperiment(*row)
 
     def assert_passed(self, proposal_id: str, *, candidate: str) -> None:
         experiment = self.latest_experiment(proposal_id)
@@ -306,7 +310,9 @@ class EvolutionExperimentStore:
                 error_count = activation.error_count + errors
                 observations = activation.observation_count + 1
                 total = success_count + error_count
-                error_rate = error_count / total if total else 0.0
+                error_rate = 0.0
+                if total:
+                    error_rate = error_count / total
                 status = "observing"
                 if observations >= activation.min_observations:
                     status_map = {True: "regressed", False: "healthy"}
@@ -340,7 +346,7 @@ class EvolutionExperimentStore:
             if rollback is None:
                 raise RuntimeError("regressed evolution activation requires a rollback port")
             rolled_back = rollback(event_id)
-            rollback_event_id = rolled_back.id if rolled_back else ""
+            rollback_event_id = getattr(rolled_back, "id", "")
             with connect(self.db_path) as conn:
                 conn.execute(
                     """
@@ -366,7 +372,9 @@ class EvolutionExperimentStore:
                 """,
                 (event_id,),
             ).fetchone()
-        return EvolutionActivation(*row) if row else None
+        if not row:
+            return None
+        return EvolutionActivation(*row)
 
     def mark_rolled_back(
         self,
@@ -458,7 +466,9 @@ def _json_list(value: str) -> list[str]:
         parsed = json.loads(value)
     except json.JSONDecodeError:
         return []
-    return [str(item) for item in parsed] if isinstance(parsed, list) else []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed]
 
 
 def _json_objects(value: str) -> list[dict[str, Any]]:

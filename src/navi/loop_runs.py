@@ -19,6 +19,12 @@ LOOP_RUN_STORE_SCHEMA_VERSION = 3
 DETACHED_EXECUTION_RECOVERY_GRACE_SECONDS = 90.0
 
 
+def _resolve_now(now: float | None) -> float:
+    if now is not None:
+        return float(now)
+    return time.time()
+
+
 @dataclass(frozen=True)
 class LoopCheckpoint:
     id: str
@@ -141,7 +147,9 @@ class LoopRunStore:
                 f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
                 (run_id,),
             ).fetchone()
-        return _loop_run_from_row(row) if row else None
+        if not row:
+            return None
+        return _loop_run_from_row(row)
 
     def claim_for_execution(
         self,
@@ -153,10 +161,10 @@ class LoopRunStore:
         allow_paused: bool = False,
     ) -> LoopRunState | None:
         """Atomically claim one loop for a single execution driver."""
-        current_time = time.time() if now is None else now
-        terminal_clause = (
-            "terminal_state IN ('', 'paused')" if allow_paused else "terminal_state = ''"
-        )
+        current_time = _resolve_now(now)
+        terminal_clause = "terminal_state = ''"
+        if allow_paused:
+            terminal_clause = "terminal_state IN ('', 'paused')"
         with connect(self.db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
             cursor = conn.execute(
@@ -182,7 +190,9 @@ class LoopRunStore:
                 f"SELECT {LOOP_RUNS_TABLE.select_list} FROM loop_runs WHERE id = ?",
                 (run_id,),
             ).fetchone()
-        return _loop_run_from_row(row) if row else None
+        if not row:
+            return None
+        return _loop_run_from_row(row)
 
     def renew_execution_lease(
         self,
@@ -193,7 +203,7 @@ class LoopRunStore:
         now: float | None = None,
     ) -> bool:
         """Extend an unexpired execution lease held by the same driver."""
-        current_time = time.time() if now is None else float(now)
+        current_time = _resolve_now(now)
         with connect(self.db_path) as conn:
             cursor = conn.execute(
                 """
@@ -222,7 +232,7 @@ class LoopRunStore:
         now: float | None = None,
         updated_before: float | None = None,
     ) -> list[LoopRunState]:
-        current_time = time.time() if now is None else now
+        current_time = _resolve_now(now)
         stale_clause = ""
         params: list[Any] = [execution_mode, owner, current_time]
         if updated_before is not None:
@@ -290,7 +300,7 @@ class LoopRunStore:
         normalized = sorted({str(owner).strip() for owner in owners if str(owner).strip()})
         if not normalized:
             return []
-        current_time = time.time() if now is None else float(now)
+        current_time = _resolve_now(now)
         placeholders = ", ".join("?" for _ in normalized)
         released: list[str] = []
         with connect(self.db_path) as conn:
@@ -363,7 +373,7 @@ class LoopRunStore:
         the old owner prevents stale foreground work from permanently
         breaching lease-health SLOs.
         """
-        current_time = time.time() if now is None else float(now)
+        current_time = _resolve_now(now)
         released: list[str] = []
         with connect(self.db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -475,7 +485,9 @@ class LoopRunStore:
                 raise KeyError(f"loop run not found: {run_id}")
             current = _loop_run_from_row(row)
             grant = current.evidence.get("resource_grant")
-            reason = str(grant.get("reason") or "") if isinstance(grant, dict) else ""
+            reason = ""
+            if isinstance(grant, dict):
+                reason = str(grant.get("reason") or "")
             if str(current.terminal_state) != str(
                 LoopTerminalState.PAUSED
             ) or not is_retryable_resource_pause(grant):
@@ -629,7 +641,7 @@ class LoopRunStore:
         The caller performs the SELECT and state-guard checks, then passes the
         fetched ``current`` state.  Returns the new ``LoopRunState``.
         """
-        current_time = time.time() if now is None else now
+        current_time = _resolve_now(now)
         next_state = replace(
             current,
             terminal_state=target,
@@ -768,7 +780,10 @@ class LoopRunStore:
         """Close only a connector-delivery pause from an authoritative receipt."""
         with connect(self.db_path) as conn:
             current, _ = self._select_current(conn, run_id)
-            target = LoopTerminalState.CONVERGED if success else LoopTerminalState.FAILED
+            target = {
+                True: LoopTerminalState.CONVERGED,
+                False: LoopTerminalState.FAILED,
+            }[bool(success)]
             if str(current.terminal_state) == str(target):
                 return current
             action = str(current.evidence.get("action") or "")
@@ -781,13 +796,17 @@ class LoopRunStore:
                     "external delivery receipt requires a delivery pause: "
                     f"{current.terminal_state}/{action}"
                 )
+            delivery_event = {
+                True: "loop.delivery_succeeded",
+                False: "loop.delivery_failed",
+            }[bool(success)]
             next_state = self._transition_to(
                 conn,
                 run_id,
                 current=current,
                 target=target,
                 evidence=evidence,
-                event_type="loop.delivery_succeeded" if success else "loop.delivery_failed",
+                event_type=delivery_event,
             )
         return next_state
 
@@ -806,7 +825,7 @@ class LoopRunStore:
             current, _ = self._select_current(conn, run_id)
             if current.is_stopped():
                 return current
-            current_time = time.time() if now is None else now
+            current_time = _resolve_now(now)
             if current.lease_owner != lease_owner or current.lease_expires_at <= current_time:
                 raise RuntimeError("loop execution lease is not owned by this worker")
             next_state = self._transition_to(
@@ -916,7 +935,7 @@ class LoopRunStore:
         limit: int = 50,
     ) -> list[LoopRunState]:
         """Return due background pauses caused only by transient resource gates."""
-        current_time = time.time() if now is None else now
+        current_time = _resolve_now(now)
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 f"""
@@ -955,7 +974,7 @@ class LoopRunStore:
         limit: int = 50,
     ) -> list[LoopRunState]:
         """Return due typed retries plus legacy background resource pauses."""
-        current_time = time.time() if now is None else now
+        current_time = _resolve_now(now)
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 f"""
@@ -1010,7 +1029,7 @@ class LoopRunStore:
         now: float | None = None,
     ) -> list[str]:
         """Return loop-run scopes that are not owned by a live execution lease."""
-        current_time = time.time() if now is None else float(now)
+        current_time = _resolve_now(now)
         with connect(self.db_path) as conn:
             rows = conn.execute(
                 """
@@ -1141,13 +1160,21 @@ class LoopRunStore:
             current = _loop_run_from_row(row)
             if current.is_stopped():
                 raise ValueError("stopped LoopRunState cannot transition without an explicit resume")
-            target = str(terminal_state) if str(terminal_state).strip() else str(node)
+            target = str(node)
+            if str(terminal_state).strip():
+                target = str(terminal_state)
             if not _transition_allowed(conn, current, target=target, condition=condition):
                 raise ValueError("LoopRun transition is not allowed by LoopSpec.state_graph")
             if lease_owner and (
                 current.lease_owner != lease_owner or current.lease_expires_at <= time.time()
             ):
                 raise RuntimeError("loop execution lease is not owned by this driver")
+            is_terminal = bool(str(terminal_state).strip())
+            new_lease_owner = current.lease_owner
+            new_lease_expires_at = current.lease_expires_at
+            if is_terminal:
+                new_lease_owner = ""
+                new_lease_expires_at = 0.0
             next_state = replace(
                 current.transition(
                     node=node,
@@ -1156,8 +1183,8 @@ class LoopRunStore:
                     evidence=evidence,
                 ),
                 version=current.version + 1,
-                lease_owner="" if str(terminal_state).strip() else current.lease_owner,
-                lease_expires_at=0.0 if str(terminal_state).strip() else current.lease_expires_at,
+                lease_owner=new_lease_owner,
+                lease_expires_at=new_lease_expires_at,
             )
             cursor = conn.execute(
                 """
@@ -1236,7 +1263,9 @@ class LoopRunStore:
                 """,
                 params,
             ).fetchone()
-        return LoopCheckpoint(*row) if row else None
+        if not row:
+            return None
+        return LoopCheckpoint(*row)
 
     def list_events(self, run_id: str, *, limit: int = 100) -> list[LoopEvent]:
         with connect(self.db_path) as conn:

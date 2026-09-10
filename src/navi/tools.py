@@ -290,8 +290,9 @@ class ToolResult:
             self.error_reason or facts.get(CAPABILITY_ERROR_REASON_KEY) or "tool_error"
         ).strip()
         raw_retryable = facts.get(CAPABILITY_RETRYABLE_KEY)
-        retryable = self.retryable if self.retryable is not None else raw_retryable
-        retryable = bool(retryable) if retryable is not None else False
+        retryable = bool(raw_retryable)
+        if self.retryable is not None:
+            retryable = bool(self.retryable)
         facts[CAPABILITY_ERROR_REASON_KEY] = reason
         facts[CAPABILITY_RETRYABLE_KEY] = retryable
         object.__setattr__(self, "facts", facts)
@@ -379,7 +380,9 @@ class ToolRegistry:
 
     def get(self, name: str) -> ToolSpec | None:
         tool = self._tools.get(name)
-        return tool.spec if tool else None
+        if not tool:
+            return None
+        return tool.spec
 
     async def call(
         self,

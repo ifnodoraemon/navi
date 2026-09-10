@@ -31,7 +31,9 @@ class IdentityStateCapability(BaseCapability):
             peer_id=context.peer_id,
             sender_id=context.sender_id,
         )
-        aliases = store.aliases(identity_id) if identity_id else ()
+        aliases: tuple[Any, ...] = ()
+        if identity_id:
+            aliases = store.aliases(identity_id)
         facts = {
             **_transition_facts("identity", identity_id or "unlinked", "observed"),
             "linked": bool(identity_id),

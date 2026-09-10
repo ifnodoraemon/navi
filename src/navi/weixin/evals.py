@@ -97,7 +97,7 @@ class _FailingEvalProvider:
 
 def load_journey_eval_dataset(path: Path) -> dict[str, Any]:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    data = {} if loaded is None else loaded
+    data = loaded or {}
     if not isinstance(data, dict):
         raise ValueError("connector journey eval dataset must be a mapping")
     if str(data.get("connector") or "").strip() != "weixin":
@@ -113,7 +113,7 @@ def load_journey_eval_dataset(path: Path) -> dict[str, Any]:
         if not journey_id:
             raise ValueError(f"journey {index} is missing id")
         if journey_id in seen:
-            raise ValueError(f"journey {journey_id}: duplicate id")
+            raise ValueError(f"duplicate journey id {journey_id!r}")
         seen.add(journey_id)
         steps = journey.get("steps")
         if not isinstance(steps, list) or not steps:
@@ -175,11 +175,9 @@ async def _run_journey(
     journey: dict[str, Any],
     provider: ModelPool | None = None,
 ) -> WeixinJourneyResult:
-    model_provider = (
-        ModelPool(default=_FailingEvalProvider())
-        if journey.get("provider") == "failing"
-        else provider
-    )
+    model_provider = provider
+    if journey.get("provider") == "failing":
+        model_provider = ModelPool(default=_FailingEvalProvider())
     runtime = AgentRuntime(
         home=home,
         provider=model_provider or ModelPool(default=_FailingEvalProvider()),
@@ -272,17 +270,20 @@ def _match_expectation(
             errors.append(
                 f"{prefix}: sent_count_delta expected {expect['sent_count_delta']!r}, got {delta!r}"
             )
+    latest_sent_text = ""
+    if sent:
+        latest_sent_text = str(sent[-1].get("text") or "")
     if "sent_contains" in expect:
-        text = sent[-1]["text"] if sent else ""
+        text = latest_sent_text
         if str(expect["sent_contains"]) not in text:
             errors.append(f"{prefix}: sent text did not contain {expect['sent_contains']!r}")
     if "sent_contains_any" in expect:
-        text = sent[-1]["text"] if sent else ""
+        text = latest_sent_text
         expected_any = [str(item) for item in expect["sent_contains_any"]]
         if not any(item in text for item in expected_any):
             errors.append(f"{prefix}: sent text did not contain any of {expected_any!r}")
     if "sent_not_contains_any" in expect:
-        text = sent[-1]["text"] if sent else ""
+        text = latest_sent_text
         forbidden = [str(item) for item in expect["sent_not_contains_any"]]
         found = [item for item in forbidden if item in text]
         if found:
@@ -302,7 +303,7 @@ def _match_expectation(
             )
     if "scheduled_goal_status" in expect:
         scheduled_goals = GoalStore(home).list_cron_goals()
-        actual = scheduled_goals[0].task_status if scheduled_goals else ""
+        actual = getattr(next(iter(scheduled_goals), None), "task_status", "")
         if actual != str(expect["scheduled_goal_status"]):
             errors.append(
                 f"{prefix}: scheduled_goal_status expected "
@@ -310,7 +311,7 @@ def _match_expectation(
             )
     if "cron_schedule" in expect:
         scheduled_goals = GoalStore(home).list_cron_goals()
-        actual = scheduled_goals[0].cron_schedule if scheduled_goals else ""
+        actual = getattr(next(iter(scheduled_goals), None), "cron_schedule", "")
         if actual != str(expect["cron_schedule"]):
             errors.append(
                 f"{prefix}: cron_schedule expected {expect['cron_schedule']!r}, got {actual!r}"
@@ -340,7 +341,8 @@ def _event_names(home: Path) -> list[str]:
 
 
 def _safe_path_name(value: str) -> str:
-    safe = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in value.strip())
+    char_map = {True: lambda c: c, False: lambda _c: "_"}
+    safe = "".join(char_map[ch.isalnum() or ch in {"-", "_"}](ch) for ch in value.strip())
     return safe or "journey"
 
 

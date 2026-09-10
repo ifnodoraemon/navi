@@ -40,7 +40,7 @@ def _http_fetch(args: dict[str, Any]) -> ToolResult:
     if parsed.scheme not in ("http", "https"):
         return ToolResult(tool="http.fetch", ok=False, error="only http/https URLs allowed")
     host = (parsed.hostname or "").lower()
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    port = parsed.port or {"https": 443}.get(parsed.scheme, 80)
     if not host:
         return ToolResult(tool="http.fetch", ok=False, error="url host is required")
     # The capability approval layer classifies private/local targets and
@@ -50,7 +50,7 @@ def _http_fetch(args: dict[str, Any]) -> ToolResult:
     prepared_addresses = [
         str(item) for item in args.get("_resolved_addresses", []) if str(item).strip()
     ]
-    pinned_ip = prepared_addresses[0] if prepared_addresses else ""
+    pinned_ip = next(iter(prepared_addresses), "")
     if not pinned_ip:
         try:
             infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
@@ -63,7 +63,9 @@ def _http_fetch(args: dict[str, Any]) -> ToolResult:
                 error_reason="target_resolution_failed",
                 retryable=True,
             )
-        pinned_ip = str(infos[0][4][0]) if infos else ""
+        pinned_ip = ""
+        if infos:
+            pinned_ip = str(infos[0][4][0])
     if not pinned_ip:
         return ToolResult(
             tool="http.fetch",
@@ -112,10 +114,13 @@ def _http_fetch(args: dict[str, Any]) -> ToolResult:
     conn: http.client.HTTPConnection | http.client.HTTPSConnection
     try:
         conn = conn_factories.get(parsed.scheme, _make_http)()
+        encoded_body = None
+        if body:
+            encoded_body = body.encode("utf-8")
         conn.request(
             method,
             path_query,
-            body=body.encode("utf-8") if body else None,
+            body=encoded_body,
             headers=request_headers,
         )
         resp = conn.getresponse()
