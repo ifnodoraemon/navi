@@ -707,6 +707,42 @@ class MemoryStore:
         )
         return self.get_item(item_id)
 
+    def apply_credit_delta(
+        self,
+        item_id: str,
+        delta: float,
+        *,
+        reason: str,
+        provenance: str = "causal_credit",
+        now: float | None = None,
+    ) -> MemoryItem | None:
+        """Apply causal credit adjustment (reinforcement or penalty) to an item's confidence."""
+        current = self.get_item(item_id)
+        if not current:
+            return None
+        current_time = _resolve_now(now)
+        new_confidence = round(max(0.0, min(1.0, current.confidence + delta)), 4)
+        stale_threshold = self.get_parameter("decay_stale_threshold", 0.20)
+        is_stale = (new_confidence < stale_threshold) and (delta < 0)
+        new_status = current.status
+        if is_stale and current.status in {"active", "proposed"}:
+            new_status = "stale"
+        metadata = dict(current.metadata)
+        metadata["last_credit_delta"] = round(delta, 4)
+        metadata["last_credit_reason"] = reason.strip()
+        metadata["last_credit_at"] = current_time
+        metadata["last_credit_provenance"] = provenance.strip()
+        self.provider.store_item(
+            replace(
+                current,
+                status=new_status,
+                confidence=new_confidence,
+                metadata=metadata,
+                updated_at=current_time,
+            )
+        )
+        return self.get_item(item_id)
+
     def sync_semantic_graph(
         self,
         *,

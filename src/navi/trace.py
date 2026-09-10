@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 import uuid
@@ -33,6 +34,7 @@ from .loop import (
 from .paths import db_paths
 from .schema import Column, Table
 
+logger = logging.getLogger("navi.trace")
 
 TRACE_STORE_SCHEMA_VERSION = 3
 LOOP_DECISION_PHASE = LoopPhase.DECISION
@@ -699,12 +701,41 @@ class TraceStore:
         evidence = _base_trace_evidence(events)
         draft = _evaluate_trace_with_rules(events, evidence)
 
-        return self.record_evaluation(
+        evaluation = self.record_evaluation(
             trace_id=trace_id,
             outcome=draft.outcome,
             failure_domain=draft.failure_domain,
             evidence=evidence,
         )
+        self._backprop_credit(
+            trace_id=trace_id,
+            evaluation=evaluation,
+            events=events,
+            evidence=evidence,
+        )
+        return evaluation
+
+    def _backprop_credit(
+        self,
+        *,
+        trace_id: str,
+        evaluation: TraceEvaluation,
+        events: list[TraceEvent],
+        evidence: dict[str, Any],
+    ) -> None:
+        try:
+            from .credit_assignment import CreditAssignmentEngine
+
+            engine = CreditAssignmentEngine(self.home)
+            engine.backprop_trace(
+                trace_id=trace_id,
+                outcome=evaluation.outcome,
+                failure_domain=evaluation.failure_domain,
+                events=events,
+                evidence=evidence,
+            )
+        except Exception as exc:
+            logger.warning("Causal credit assignment failed for trace %s: %s", trace_id, exc)
 
     def record_evaluation(
         self,

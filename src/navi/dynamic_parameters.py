@@ -29,6 +29,7 @@ SYSTEM_DYNAMIC_PARAMETERS: dict[str, float] = {
     "decay_stability_scale": 1.0,
     "graph_fanout_damping": 3.0,
     "hebbian_learning_rate": 0.05,
+    "credit_assignment_learning_rate": 0.05,
     "confidence_reduction_delta": 0.10,
     "consolidation_default_confidence": 0.70,
     "consolidation_history_retention_seconds": 90.0 * 86400.0,
@@ -91,7 +92,19 @@ class DynamicParameterRegistry:
         self._cache = {name: val for name, (val, _, _) in persisted.items()}
         self._last_loaded_at = now
 
-    def get(self, name: str, fallback: float | None = None) -> float:
+    def invalidate_cache(self) -> None:
+        self._cache.clear()
+        self._last_loaded_at = 0.0
+
+    def get(
+        self,
+        name: str,
+        fallback: float | None = None,
+        *,
+        reload: bool = False,
+    ) -> float:
+        if reload:
+            self.invalidate_cache()
         self._sync()
         default_val = SYSTEM_DYNAMIC_PARAMETERS.get(name, 0.0)
         effective_fallback = default_val
