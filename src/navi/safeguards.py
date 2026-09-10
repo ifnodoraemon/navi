@@ -4,6 +4,7 @@ import ipaddress
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import secrets
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from .dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from .permission_contract import PERMISSION_ORDER
 
 if TYPE_CHECKING:
@@ -744,11 +746,31 @@ _PERSONAL_DATA_PATTERNS: list[tuple[str, str]] = [
 ]
 
 
+def _shannon_entropy(token: str) -> float:
+    if not token:
+        return 0.0
+    freq: dict[str, int] = {}
+    for ch in token:
+        freq[ch] = freq.get(ch, 0) + 1
+    length = float(len(token))
+    return -sum((count / length) * math.log2(count / length) for count in freq.values())
+
+
 def redact_secrets(text: str) -> str:
     if not isinstance(text, str):
         return text
     for pattern, replacement in _SECRET_PATTERNS:
         text = re.sub(pattern, replacement, text)
+
+    entropy_threshold = float(SYSTEM_DYNAMIC_PARAMETERS.get("safeguards_entropy_threshold", 4.5))
+
+    def _entropy_replace(match: re.Match[str]) -> str:
+        word = match.group(0)
+        if len(word) >= 24 and _shannon_entropy(word) >= entropy_threshold:
+            return "[REDACTED_HIGH_ENTROPY_SECRET]"
+        return word
+
+    text = re.sub(r"[A-Za-z0-9+/=_-]{24,}", _entropy_replace, text)
     return text
 
 

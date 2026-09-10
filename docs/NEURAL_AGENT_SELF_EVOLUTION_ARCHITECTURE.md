@@ -182,4 +182,15 @@ Navi 在全局 150 个源码模块与所有测试中彻底剔除了过程式分�
   * **核心工具暴露**：注册 `system.parameters` 工具，向模型与外部直接提供自省与在线微调全部连续权重的统一接口。
   * **审计日志鲁棒性**：消除了变异工具调用审计中 `error=None` 导致的 SQLite 非空约束隐患。
 
+### 维度 6：信息安全防线与香农熵动态治理（已落地）
+* **演进实现**：
+  * 在 `src/navi/safeguards.py` 中构建香农熵检测算法，激活动态超参数 `safeguards_entropy_threshold`（默认 4.5）。
+  * 自动拦截并脱敏长链无前缀高熵密钥（如 Base64 随机凭证、密码学 Token），杜绝敏感信息外泄。
+
+### 维度 7：执行引擎租约生命周期动态化（已落地）
+* **演进实现**：
+  * 在 `src/navi/loop_runs.py` 中将 Loop 执行声明与争抢租约（`claim_for_execution`）由硬编码 180.0s 切换为从 `SYSTEM_DYNAMIC_PARAMETERS.get("saga_lease_timeout_turn", 120.0)` 动态获取。
+  * 消除分布式/守护轮询争抢中的硬编码静态常量，全面实现弹性时间可塑性。
+
+
 

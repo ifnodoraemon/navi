@@ -207,3 +207,12 @@ def test_action_capability_audit_log_redacts_args(tmp_path: Path):
     args_json = asyncio.run(run())
     assert "sk-action-secret-123" not in args_json
     assert "api_key=[REDACTED]" in args_json
+
+
+def test_redacts_high_entropy_secret_tokens():
+    raw_secret = "K8xN2pQ9mR4vL7wT1jY5bZ0cE3fG6hS"
+    text = f"payload data value is {raw_secret} in transaction"
+    redacted = redact_secrets(text)
+    assert raw_secret not in redacted
+    assert "[REDACTED_HIGH_ENTROPY_SECRET]" in redacted
+

@@ -159,11 +159,14 @@ class LoopRunStore:
         run_id: str,
         *,
         owner: str,
-        lease_seconds: float = 180.0,
+        lease_seconds: float | None = None,
         now: float | None = None,
         allow_paused: bool = False,
     ) -> LoopRunState | None:
         """Atomically claim one loop for a single execution driver."""
+        effective_lease = lease_seconds
+        if effective_lease is None:
+            effective_lease = float(SYSTEM_DYNAMIC_PARAMETERS.get("saga_lease_timeout_turn", 120.0))
         current_time = _resolve_now(now)
         terminal_clause = "terminal_state = ''"
         if allow_paused:
@@ -180,7 +183,7 @@ class LoopRunStore:
                 """,
                 (
                     owner,
-                    current_time + max(1.0, lease_seconds),
+                    current_time + max(1.0, effective_lease),
                     current_time,
                     run_id,
                     owner,
