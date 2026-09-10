@@ -21,6 +21,7 @@ class OperatingContext:
     objective: str = ""
     prompt_layers: tuple[str, ...] = (
         "identity",
+        "instructions",
         "runtime",
         "authorization",
         "memory",

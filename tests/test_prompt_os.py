@@ -344,3 +344,11 @@ def test_planner_verification_failure_not_duplicated_in_runtime_facts() -> None:
     facts = _cdata_json(rendered, "runtime_facts")
     assert "last_verification_failure" not in facts
     assert "Attempt 8 was rejected" not in json.dumps(facts)
+
+
+def test_instructions_prompt_assembly_integration(tmp_path: Path) -> None:
+    from navi.prompting import PromptLayerStore, build_system_prompt
+    prompt_store = PromptLayerStore(tmp_path)
+    prompt_store.write_override("instructions", "Custom evolved instructions for tool invocation.")
+    rendered = build_system_prompt(home=tmp_path)
+    assert "Custom evolved instructions for tool invocation." in rendered

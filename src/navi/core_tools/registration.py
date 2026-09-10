@@ -368,6 +368,40 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
     )
     registry.register(
         _core_tool_spec(
+            name="system.parameters",
+            capability_class="system",
+            description=(
+                "Inspect, list, or dynamically tune system weights, retry budgets, and dynamic thresholds."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["get", "set", "list"],
+                        "default": "list",
+                    },
+                    "name": {"type": "string"},
+                    "value": {"type": "number"},
+                    "reason": {"type": "string"},
+                },
+            },
+            output_schema=_output_schema(
+                {
+                    "action": {"type": "string"},
+                    "parameter": {"type": "object"},
+                    "parameters": {"type": "object"},
+                    "count": {"type": "integer"},
+                }
+            ),
+            facts_only=True,
+            mutates=True,
+            permission="write",
+        ),
+        lambda args: _memory_parameters(home, args),
+    )
+    registry.register(
+        _core_tool_spec(
             name="browser.screenshot",
             capability_class="browser",
             risk_class="high",

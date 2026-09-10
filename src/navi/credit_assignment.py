@@ -334,4 +334,55 @@ class CreditAssignmentEngine:
                 )
             )
 
+        # 5. Backprop to Tool nodes on capability failures
+        if failure_domain == str(TraceFailureDomain.CAPABILITY_FAILURE):
+            failed_tools = {
+                str(getattr(e, "tool", "") or "").strip()
+                for e in events
+                if not bool(getattr(e, "ok", True)) and str(getattr(e, "tool", "") or "").strip()
+            }
+            for tool_name in sorted(failed_tools):
+                attributions.append(
+                    self.record_attribution(
+                        trace_id=trace_id,
+                        node_type="tool",
+                        target_id=tool_name,
+                        outcome=outcome,
+                        failure_domain=failure_domain,
+                        reward=reward,
+                        delta_applied=reward,
+                        reason=f"blame_registered_for_capability_failure:{tool_name}",
+                        now=now,
+                    )
+                )
+
+        # 6. Backprop on Loop No Progress failures
+        if failure_domain == str(TraceFailureDomain.LOOP_NO_PROGRESS):
+            attributions.append(
+                self.record_attribution(
+                    trace_id=trace_id,
+                    node_type="prompt_layer",
+                    target_id="instructions",
+                    outcome=outcome,
+                    failure_domain=failure_domain,
+                    reward=reward,
+                    delta_applied=reward,
+                    reason="blame_registered_for_loop_no_progress",
+                    now=now,
+                )
+            )
+            attributions.append(
+                self.record_attribution(
+                    trace_id=trace_id,
+                    node_type="dynamic_parameter",
+                    target_id="loop_max_attempts_turn",
+                    outcome=outcome,
+                    failure_domain=failure_domain,
+                    reward=reward,
+                    delta_applied=reward,
+                    reason="budget_strain_for_loop_no_progress",
+                    now=now,
+                )
+            )
+
         return attributions

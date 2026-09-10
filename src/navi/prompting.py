@@ -126,15 +126,22 @@ def build_system_prompt_assembly(
     skills_content = ""
     if skills_context:
         skills_content = f"Installed skills:\n{skills_context}"
+    instructions_layer = prompt_store.get("instructions")
     layers = [
         prompt_store.get("identity"),
-        PromptLayer(
-            "runtime",
-            "\n".join(runtime_lines),
-        ),
-        PromptLayer("memory", memory_content),
-        PromptLayer("skills", skills_content),
     ]
+    if instructions_layer.content.strip():
+        layers.append(instructions_layer)
+    layers.extend(
+        [
+            PromptLayer(
+                "runtime",
+                "\n".join(runtime_lines),
+            ),
+            PromptLayer("memory", memory_content),
+            PromptLayer("skills", skills_content),
+        ]
+    )
     return assemble_responder_system_prompt(layers, operating_context)
 
 

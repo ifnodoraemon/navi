@@ -331,11 +331,13 @@ def test_credit_assignment_temporal_difference_discounting(tmp_path: Path) -> No
         events=[ev_early, ev_late],
     )
 
-    assert len(attributions) == 2
+    assert len(attributions) == 3
     attr_by_target = {a.target_id: a for a in attributions}
 
     assert attr_by_target[item_late.id].reward == -0.5
     assert attr_by_target[item_early.id].reward == -0.425
+    assert attr_by_target["tool1"].node_type == "tool"
+    assert attr_by_target["tool1"].reward == -0.5
 
     updated_early = mem_store.get_item(item_early.id)
     updated_late = mem_store.get_item(item_late.id)
@@ -344,4 +346,38 @@ def test_credit_assignment_temporal_difference_discounting(tmp_path: Path) -> No
     assert updated_late.confidence == 0.45
     assert updated_early.confidence == 0.4575
     assert updated_early.confidence > updated_late.confidence
+
+
+def test_credit_assignment_loop_no_progress(tmp_path: Path) -> None:
+    engine = CreditAssignmentEngine(tmp_path)
+    ev = TraceEvent(
+        id="ev_loop",
+        trace_id="loop_trace",
+        session_id="s1",
+        run_id="r1",
+        phase=str(TracePhase.PLANNER_SYSCALL),
+        source="user",
+        peer_id="p1",
+        sender_id="u1",
+        tool="test_tool",
+        model_role="planner",
+        ok=False,
+        input_json="{}",
+        output_json="{}",
+        message="loop exhausted without progress",
+        created_at=time.time(),
+    )
+
+    attributions = engine.backprop_trace(
+        trace_id="loop_trace",
+        outcome=str(TraceOutcome.FAILURE),
+        failure_domain=str(TraceFailureDomain.LOOP_NO_PROGRESS),
+        events=[ev],
+    )
+
+    attr_targets = {a.target_id: a for a in attributions}
+    assert "instructions" in attr_targets
+    assert attr_targets["instructions"].node_type == "prompt_layer"
+    assert "loop_max_attempts_turn" in attr_targets
+    assert attr_targets["loop_max_attempts_turn"].node_type == "dynamic_parameter"
 

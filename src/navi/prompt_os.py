@@ -544,7 +544,7 @@ def _prompt_spec_content(assembly_name: str, block_name: str) -> str:
 
 
 def _responder_tier(layer_name: str) -> str:
-    if layer_name in {"identity", "authorization", "style"}:
+    if layer_name in {"identity", "instructions", "authorization", "style"}:
         return "stable"
     if layer_name in {"runtime", "memory", "skills"}:
         return "volatile"

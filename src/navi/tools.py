@@ -542,7 +542,7 @@ class ToolRegistry:
                 ensure_ascii=False,
                 sort_keys=True,
             ),
-            error=redact_secrets(result.error),
+            error=redact_secrets(str(result.error or "")),
             ended_at=result.ended_at,
         )
 

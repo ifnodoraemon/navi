@@ -166,6 +166,20 @@ Navi 在全局 150 个源码模块与所有测试中彻底剔除了过程式分�
 ### 维度 3：自博弈沙盒的推演广度（Prompt Layer Self-Play，已落地）
 * **演进实现**：
   * `SelfPlayArena` 扩充 `generate_prompt_perturbations` 与针对 `prompt_layer` 的沙盒演化试验。
+  * 全参数边界探索：定义 `_get_parameter_bounds` 自动自适应任意新注册参数的扰动区间与步长。
   * 发生 Planner/Parser 因果归因受罚时，沙盒自动生成防御性 Prompt 候选，经过 `runtime.text.nonempty` 契约断言后免人工自动晋升覆盖。
   * 守护进程周期调度同时覆盖连续超参空间与 Prompt 语义层。
+
+### 维度 4：前向 Prompt 演化装配与语义生效闭环（已落地）
+* **演进实现**：
+  * 在 `OperatingContext` 中将 `instructions` 正式纳入上下文许可层，并在 `_responder_tier` 中归为稳定层（`stable`）。
+  * 在 `build_system_prompt_assembly` 中将动态载入的 `instructions` 层直接注入系统提示词编译图，确保沙盒自博弈演化胜出的 Prompt 能够即时在前向推理中生效。
+
+### 维度 5：因果链全要素归因与系统调优工具暴露（已落地）
+* **演进实现**：
+  * **工具级反传**：在 `CreditAssignmentEngine` 中为 `CAPABILITY_FAILURE` 引入工具节点因果归因（`node_type="tool"`），精准惩处异常工具。
+  * **预算耗尽反传**：针对 `LOOP_NO_PROGRESS` 自动反传问责 `instructions` 与 `loop_max_attempts_turn`。
+  * **核心工具暴露**：注册 `system.parameters` 工具，向模型与外部直接提供自省与在线微调全部连续权重的统一接口。
+  * **审计日志鲁棒性**：消除了变异工具调用审计中 `error=None` 导致的 SQLite 非空约束隐患。
+
 

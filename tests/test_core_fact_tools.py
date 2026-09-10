@@ -1203,3 +1203,25 @@ async def test_web_search_exa_does_not_reclassify_programming_errors(
         await web_search_utils._web_search(
             {"query": "navi smoke", "provider": "exa"}
         )
+
+
+@pytest.mark.asyncio
+async def test_system_parameters_and_memory_parameters_tools(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    gateway = build_tool_gateway(home, project_dir=tmp_path)
+
+    list_res = await gateway.call("system.parameters", {"action": "list"})
+    assert list_res.ok is True
+    assert "parameters" in list_res.facts
+    assert "temporal_discount_factor" in list_res.facts["parameters"]
+
+    set_res = await gateway.call(
+        "system.parameters",
+        {"action": "set", "name": "loop_max_attempts_turn", "value": 7.0, "reason": "boost_retry"},
+    )
+    assert set_res.ok is True
+    assert set_res.facts["parameter"]["value"] == 7.0
+
+    get_res = await gateway.call("memory.parameters", {"action": "get", "name": "loop_max_attempts_turn"})
+    assert get_res.ok is True
+    assert get_res.facts["parameter"]["value"] == 7.0

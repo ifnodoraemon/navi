@@ -103,8 +103,33 @@ _PARAMETER_EXPLORATION_BOUNDS: dict[str, tuple[float, float, float]] = {
     "ltp_boost_delta": (0.01, 0.20, 0.02),
     "provider_retry_after_seconds": (5.0, 60.0, 2.5),
     "loop_max_turns": (10.0, 60.0, 5.0),
+    "loop_max_attempts_turn": (2.0, 10.0, 1.0),
+    "loop_max_attempts_control": (1.0, 6.0, 1.0),
+    "loop_max_attempts_scheduled": (3.0, 12.0, 1.0),
+    "loop_max_attempts_durable_goal": (5.0, 20.0, 1.0),
+    "temporal_discount_factor": (0.50, 0.99, 0.05),
     "confidence_reduction_delta": (0.02, 0.30, 0.02),
+    "prompt_mutation_temperature": (0.20, 1.00, 0.10),
+    "prompt_evaluation_threshold": (0.50, 0.95, 0.05),
+    "safeguards_entropy_threshold": (2.0, 8.0, 0.5),
+    "safeguards_confidence_threshold": (0.50, 0.95, 0.05),
+    "hebbian_learning_rate": (0.01, 0.20, 0.02),
+    "credit_assignment_learning_rate": (0.01, 0.20, 0.02),
+    "consolidation_default_confidence": (0.40, 0.90, 0.05),
+    "graph_edge_prune_threshold": (0.05, 0.40, 0.05),
+    "saga_lease_timeout_turn": (30.0, 300.0, 30.0),
+    "saga_lease_timeout_control": (15.0, 120.0, 15.0),
 }
+
+
+def _get_parameter_bounds(param_name: str, current_value: float) -> tuple[float, float, float]:
+    entry = _PARAMETER_EXPLORATION_BOUNDS.get(param_name)
+    if entry is not None:
+        return entry
+    step = round(max(0.01, abs(current_value) * 0.1), 4)
+    min_val = round(min(current_value - step, current_value * 0.5), 4)
+    max_val = round(max(current_value + step, current_value * 2.0), 4)
+    return (min_val, max_val, step)
 
 
 class SelfPlayArena:
@@ -131,13 +156,14 @@ class SelfPlayArena:
         """Generate targeted parameter perturbations informed by credit attributions."""
         attributions = self.credit_engine.list_attributions(limit=50)
         param_attribution_counts: dict[str, int] = {}
+        all_dynamic_params = set(SYSTEM_DYNAMIC_PARAMETERS.keys()) | set(_PARAMETER_EXPLORATION_BOUNDS.keys())
         for attr in attributions:
             name = attr.target_id
-            if attr.node_type == "dynamic_parameter" and name in _PARAMETER_EXPLORATION_BOUNDS:
+            if attr.node_type == "dynamic_parameter" and name in all_dynamic_params:
                 param_attribution_counts[name] = param_attribution_counts.get(name, 0) + 1
 
         ordered_targets: list[str] = sorted(
-            _PARAMETER_EXPLORATION_BOUNDS.keys(),
+            all_dynamic_params,
             key=lambda k: param_attribution_counts.get(k, 0),
             reverse=True,
         )
@@ -146,8 +172,8 @@ class SelfPlayArena:
         for target_id in ordered_targets:
             if len(specs) >= limit:
                 break
-            min_val, max_val, step = _PARAMETER_EXPLORATION_BOUNDS[target_id]
             current_val = self.param_registry.get(target_id)
+            min_val, max_val, step = _get_parameter_bounds(target_id, current_val)
             # Explore upward step
             candidate_up = round(min(max_val, current_val + step), 4)
             if candidate_up != current_val:

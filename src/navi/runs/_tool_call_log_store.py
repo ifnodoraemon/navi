@@ -112,7 +112,7 @@ class ToolCallLogStoreMixin:
                 SET ok = ?, facts_json = ?, error = ?, ended_at = ?
                 WHERE id = ?
                 """,
-                (int(ok), facts_json, error, ended_at, log_id),
+                (int(ok), facts_json, str(error or ""), ended_at, log_id),
             )
             if cursor.rowcount != 1:
                 raise KeyError(f"tool call audit reservation not found: {log_id}")
