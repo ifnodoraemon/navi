@@ -23,14 +23,15 @@ from navi.json_utils import json_object
 from navi.mcp_client import MCPClient, MCPServerConfig, MCPTransportError
 from navi.mcp_tools import parse_mcp_config
 
+from ..dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from ..tools import ToolResult
 from .utils import _positive_int
 
 _SEARCH_USER_AGENT = "Navi/1.0"
-_SEARCH_TITLE_MAX_CHARS = 300
-_SEARCH_SNIPPET_MAX_CHARS = 1200
-_SEARCH_RESPONSE_MAX_BYTES = 2_000_000
-_X_RESPONSE_MAX_BYTES = 4_000_000
+_SEARCH_TITLE_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("search_title_max_chars", 300.0))
+_SEARCH_SNIPPET_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("search_snippet_max_chars", 1200.0))
+_SEARCH_RESPONSE_MAX_BYTES = int(SYSTEM_DYNAMIC_PARAMETERS.get("search_response_max_bytes", 2_000_000.0))
+_X_RESPONSE_MAX_BYTES = int(SYSTEM_DYNAMIC_PARAMETERS.get("search_x_response_max_bytes", 4_000_000.0))
 _FORBIDDEN_SEARCH_HEADERS = frozenset(
     {"host", "content-length", "transfer-encoding", "connection"}
 )

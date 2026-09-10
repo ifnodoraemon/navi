@@ -10,12 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from .config import DEFAULT_WEIXIN_BASE_URL
-
 from .models import WeixinAccount
 
-CONTEXT_TOKEN_MAX_AGE_SECONDS = 86400.0
-WEIXIN_INGRESS_STALE_AFTER_SECONDS = 180.0
+CONTEXT_TOKEN_MAX_AGE_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("weixin_context_token_max_age_seconds", 86400.0))
+WEIXIN_INGRESS_STALE_AFTER_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("weixin_ingress_stale_after_seconds", 180.0))
 
 
 def _resolve_ts(ts: float | int | None) -> float:

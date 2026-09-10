@@ -4,11 +4,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from ..operating_context import permission_allows
 from ..skills import SkillStore
 from ..tools import ToolResult
 
-SKILL_FILE_MAX_BYTES = 200_000
+SKILL_FILE_MAX_BYTES = int(SYSTEM_DYNAMIC_PARAMETERS.get("skill_file_max_bytes", 200_000.0))
 
 def _skills_list(home: Path, args: dict[str, Any], *, workspace: Path) -> ToolResult:
     permission_ceiling = str(args.get("_skill_permission_ceiling") or "read")

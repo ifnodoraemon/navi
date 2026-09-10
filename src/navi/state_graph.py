@@ -63,41 +63,42 @@ from .provider import (
     ProviderResponseError,
     StructuredOutputError,
 )
+from .dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from .text_utils import truncate_middle
 from .trace import TraceStore
 from .workspaces import LockAcquireResult
 
-PLANNER_CONTEXT_MESSAGE_LIMIT = 200
-PLANNER_CONTEXT_RECENT_MESSAGES = 12
-PLANNER_CONTEXT_MAX_CHARS = 12_000
-PLANNER_CONTEXT_OLDER_PREVIEW_MESSAGES = 8
-PLANNER_CONTEXT_OLDER_PREVIEW_CHARS = 220
-PLANNER_CONTEXT_RECENT_MESSAGE_MAX_CHARS = 2_000
-PLANNER_MEMORY_ITEM_MAX_CHARS = 800
-PLANNER_ATTEMPT_HISTORY_LIMIT = 8
-PLANNER_ATTEMPT_HISTORY_MAX_CHARS = 16_000
-PLANNER_ATTEMPT_MESSAGE_MAX_CHARS = 1_000
-PLANNER_PRIOR_RESULT_MAX_CHARS = 4_000
-PLANNER_AMBIENT_RECORD_LIMIT = 3
-SEMANTIC_CHECKER_ATTEMPT_LIMIT = 4
-SEMANTIC_CHECKER_ARGS_MAX_CHARS = 3_000
-SEMANTIC_CHECKER_FACTS_MAX_CHARS = 6_000
-SEMANTIC_CHECKER_MESSAGE_MAX_CHARS = 3_000
+PLANNER_CONTEXT_MESSAGE_LIMIT = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_context_message_limit", 200.0))
+PLANNER_CONTEXT_RECENT_MESSAGES = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_context_recent_messages", 12.0))
+PLANNER_CONTEXT_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_context_max_chars", 12_000.0))
+PLANNER_CONTEXT_OLDER_PREVIEW_MESSAGES = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_context_older_preview_messages", 8.0))
+PLANNER_CONTEXT_OLDER_PREVIEW_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_context_older_preview_chars", 220.0))
+PLANNER_CONTEXT_RECENT_MESSAGE_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_context_recent_message_max_chars", 2_000.0))
+PLANNER_MEMORY_ITEM_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_memory_item_max_chars", 800.0))
+PLANNER_ATTEMPT_HISTORY_LIMIT = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_attempt_history_limit", 8.0))
+PLANNER_ATTEMPT_HISTORY_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_attempt_history_max_chars", 16_000.0))
+PLANNER_ATTEMPT_MESSAGE_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_attempt_message_max_chars", 1_000.0))
+PLANNER_PRIOR_RESULT_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_prior_result_max_chars", 4_000.0))
+PLANNER_AMBIENT_RECORD_LIMIT = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_ambient_record_limit", 3.0))
+SEMANTIC_CHECKER_ATTEMPT_LIMIT = int(SYSTEM_DYNAMIC_PARAMETERS.get("semantic_checker_attempt_limit", 4.0))
+SEMANTIC_CHECKER_ARGS_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("semantic_checker_args_max_chars", 3_000.0))
+SEMANTIC_CHECKER_FACTS_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("semantic_checker_facts_max_chars", 6_000.0))
+SEMANTIC_CHECKER_MESSAGE_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("semantic_checker_message_max_chars", 3_000.0))
 # The verdict's evidence_summary must stay short enough that the JSON object
 # cannot be truncated by the checker's max_tokens budget. An over-long summary
 # was the direct trigger of a turn-killing StructuredOutputError.
-SEMANTIC_CHECKER_EVIDENCE_SUMMARY_MAX_CHARS = 2_000
-SEMANTIC_CHECKER_VERDICT_ERROR_CHARS = 200
+SEMANTIC_CHECKER_EVIDENCE_SUMMARY_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("semantic_checker_evidence_summary_max_chars", 2_000.0))
+SEMANTIC_CHECKER_VERDICT_ERROR_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("semantic_checker_verdict_error_chars", 200.0))
 # A malformed checker verdict (truncated or invalid JSON) is a boundary
 # failure of the verdict call, not a verdict. The port re-asks the model a
 # bounded number of times before failing closed so the loop stays governed.
-SEMANTIC_CHECKER_VERDICT_RETRIES = 1
-TASK_RESULT_PREVIEW_CHARS = 240
-PROVIDER_TRANSPORT_MAX_RETRIES = 3
-PROVIDER_TRANSPORT_RETRY_MIN_SECONDS = 1.0
-PROVIDER_TRANSPORT_RETRY_MAX_SECONDS = 300.0
-EXECUTION_LEASE_MIN_SECONDS = 900.0
-EXECUTION_LEASE_HEARTBEAT_MAX_SECONDS = 30.0
+SEMANTIC_CHECKER_VERDICT_RETRIES = int(SYSTEM_DYNAMIC_PARAMETERS.get("semantic_checker_verdict_retries", 1.0))
+TASK_RESULT_PREVIEW_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("task_result_preview_chars", 240.0))
+PROVIDER_TRANSPORT_MAX_RETRIES = int(SYSTEM_DYNAMIC_PARAMETERS.get("provider_transport_max_retries", 3.0))
+PROVIDER_TRANSPORT_RETRY_MIN_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("provider_transport_retry_min_seconds", 1.0))
+PROVIDER_TRANSPORT_RETRY_MAX_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("provider_transport_retry_max_seconds", 300.0))
+EXECUTION_LEASE_MIN_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("execution_lease_min_seconds", 900.0))
+EXECUTION_LEASE_HEARTBEAT_MAX_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("execution_lease_heartbeat_max_seconds", 30.0))
 
 
 def _exc_message(exc: BaseException, *, limit: int = 1_000) -> str:

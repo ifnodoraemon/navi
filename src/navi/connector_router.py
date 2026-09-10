@@ -13,6 +13,7 @@ from .event_bus import (
     MessageIngressEvent,
     ResponseReadyEvent,
 )
+from .dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from .finalization import synthesize_user_reply_from_facts
 from .goal_state_graph import resume_goal_loop_run
 
@@ -20,7 +21,7 @@ from .goal_state_graph import resume_goal_loop_run
 # declaring the upstream unresponsive. A turn that is still working sends
 # heartbeats well within this window, so a slow-but-live turn never times out.
 # Only a genuinely stuck/crashed upstream (no heartbeat, no response) trips it.
-IDLE_TIMEOUT_SECONDS = 120.0
+IDLE_TIMEOUT_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("connector_idle_timeout_seconds", 120.0))
 
 
 class ConnectorRouter:

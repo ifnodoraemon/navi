@@ -146,6 +146,49 @@ _PARAMETER_EXPLORATION_BOUNDS: dict[str, tuple[float, float, float]] = {
     "severity_capability_failure": (0.2, 0.9, 0.1),
     "severity_runtime": (0.2, 0.8, 0.1),
     "severity_provider_no_response": (0.1, 0.6, 0.1),
+    "planner_context_message_limit": (50.0, 500.0, 25.0),
+    "planner_context_recent_messages": (4.0, 30.0, 2.0),
+    "planner_context_max_chars": (4000.0, 32000.0, 2000.0),
+    "planner_context_older_preview_messages": (2.0, 20.0, 2.0),
+    "planner_context_older_preview_chars": (100.0, 500.0, 20.0),
+    "planner_context_recent_message_max_chars": (500.0, 5000.0, 250.0),
+    "planner_memory_item_max_chars": (200.0, 2000.0, 100.0),
+    "planner_attempt_history_limit": (2.0, 20.0, 2.0),
+    "planner_attempt_history_max_chars": (4000.0, 32000.0, 2000.0),
+    "planner_attempt_message_max_chars": (200.0, 2500.0, 100.0),
+    "planner_prior_result_max_chars": (1000.0, 10000.0, 500.0),
+    "planner_ambient_record_limit": (1.0, 10.0, 1.0),
+    "semantic_checker_attempt_limit": (1.0, 10.0, 1.0),
+    "semantic_checker_args_max_chars": (500.0, 8000.0, 500.0),
+    "semantic_checker_facts_max_chars": (1000.0, 15000.0, 1000.0),
+    "semantic_checker_message_max_chars": (500.0, 8000.0, 500.0),
+    "semantic_checker_evidence_summary_max_chars": (500.0, 5000.0, 250.0),
+    "semantic_checker_verdict_error_chars": (50.0, 500.0, 25.0),
+    "semantic_checker_verdict_retries": (0.0, 3.0, 1.0),
+    "task_result_preview_chars": (60.0, 600.0, 30.0),
+    "provider_transport_max_retries": (1.0, 8.0, 1.0),
+    "provider_transport_retry_min_seconds": (0.5, 5.0, 0.5),
+    "provider_transport_retry_max_seconds": (60.0, 600.0, 30.0),
+    "execution_lease_min_seconds": (300.0, 3600.0, 150.0),
+    "execution_lease_heartbeat_max_seconds": (10.0, 90.0, 5.0),
+    "default_port_probe_timeout_seconds": (0.2, 5.0, 0.2),
+    "daemon_project_event_concurrency": (1.0, 16.0, 1.0),
+    "max_git_status_prompt_chars": (1000.0, 20000.0, 1000.0),
+    "max_log_read_bytes": (64000.0, 2000000.0, 64000.0),
+    "max_log_prompt_chars": (20000.0, 300000.0, 20000.0),
+    "provider_error_max_chars": (200.0, 3000.0, 100.0),
+    "skill_file_max_bytes": (50000.0, 1000000.0, 50000.0),
+    "search_title_max_chars": (100.0, 800.0, 50.0),
+    "search_snippet_max_chars": (300.0, 3000.0, 150.0),
+    "search_response_max_bytes": (500000.0, 8000000.0, 500000.0),
+    "search_x_response_max_bytes": (1000000.0, 16000000.0, 1000000.0),
+    "connector_idle_timeout_seconds": (30.0, 600.0, 30.0),
+    "connector_heartbeat_interval_seconds": (5.0, 60.0, 5.0),
+    "telegram_get_file_timeout_seconds": (5.0, 60.0, 5.0),
+    "telegram_download_timeout_seconds": (15.0, 300.0, 15.0),
+    "weixin_config_timeout_seconds": (2.0, 30.0, 2.0),
+    "weixin_context_token_max_age_seconds": (3600.0, 259200.0, 3600.0),
+    "weixin_ingress_stale_after_seconds": (30.0, 600.0, 30.0),
 }
 
 
@@ -237,10 +280,13 @@ class SelfPlayArena:
         prompt_store = PromptLayerStore(self.home)
         attributions = self.credit_engine.list_attributions(limit=50)
         blamed_prompt_layers: dict[str, int] = {}
+        blamed_domains: dict[str, str] = {}
         for attr in attributions:
             name = attr.target_id
             if attr.node_type == "prompt_layer" and prompt_store.is_declared(name):
                 blamed_prompt_layers[name] = blamed_prompt_layers.get(name, 0) + 1
+                if name not in blamed_domains:
+                    blamed_domains[name] = attr.failure_domain
 
         ordered_layers: list[str] = sorted(
             blamed_prompt_layers.keys(),
@@ -250,12 +296,38 @@ class SelfPlayArena:
         if not ordered_layers:
             ordered_layers = [name for name in ("instructions", "identity") if prompt_store.is_declared(name)]
 
+        domain_mutations: dict[str, tuple[str, str]] = {
+            "planner_or_parser": (
+                "append_schema_constraint_refinement",
+                "\nStrictly adhere to schema formats and output constraints.",
+            ),
+            "checker_blocked": (
+                "append_grounded_evidence_refinement",
+                "\nEnsure all claims are explicitly verified against grounded context.",
+            ),
+            "loop_no_progress": (
+                "append_progress_convergence_refinement",
+                "\nAdvance execution systematically towards completion without circular retries.",
+            ),
+            "safeguard_policy": (
+                "append_safeguards_compliance_refinement",
+                "\nRedact and protect sensitive information and cryptographic credentials.",
+            ),
+        }
+
         specs: list[ShadowTrialSpec] = []
         for layer_id in ordered_layers:
             if len(specs) >= limit:
                 break
             current_content = prompt_store.read(layer_id)
-            refinement = "\nStrictly adhere to schema formats and output constraints."
+            domain = blamed_domains.get(layer_id, "default")
+            hypothesis, refinement = domain_mutations.get(
+                domain,
+                (
+                    "append_schema_constraint_refinement",
+                    "\nStrictly adhere to schema formats and output constraints.",
+                ),
+            )
             candidate_text = current_content.strip() + refinement + "\n"
             specs.append(
                 ShadowTrialSpec(
@@ -264,7 +336,7 @@ class SelfPlayArena:
                     target_id=layer_id,
                     baseline_value=float(len(current_content)),
                     candidate_value=float(len(candidate_text)),
-                    hypothesis="append_schema_constraint_refinement",
+                    hypothesis=hypothesis,
                     eval_case_ids=("runtime.text.nonempty",),
                     candidate_content=candidate_text,
                 )
@@ -307,8 +379,8 @@ class SelfPlayArena:
         passed = bool(all_checks) and all(bool(c.get("passed")) for c in all_checks)
         score_delta = 0.0
         if passed:
-            # Positive score delta indicating passed verification and simulated utility
-            score_delta = 0.10
+            passing_thresh = self.param_registry.get("evals_passing_score_threshold", 0.85)
+            score_delta = round(passing_thresh * 0.1, 4)
 
         promoted = passed and auto_promote
         if promoted:

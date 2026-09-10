@@ -12,6 +12,7 @@ from .connector_router import ConnectorRouter
 from .control_plane import TurnController
 from .event_bus import EventBus, NaviEvent, ResponseReadyEvent, UserIntentEvent
 from .intent_agent import IntentAgent
+from .dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from .turn_lifecycle import AgentTurnResult
 from .runtime import AgentRuntime
 
@@ -19,7 +20,7 @@ from .runtime import AgentRuntime
 # How often a still-running turn signals liveness on its response channel. Must
 # be comfortably below the router's IDLE_TIMEOUT_SECONDS so a live turn never
 # trips the idle timeout between two heartbeats.
-HEARTBEAT_INTERVAL_SECONDS = 20.0
+HEARTBEAT_INTERVAL_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("connector_heartbeat_interval_seconds", 20.0))
 
 
 @dataclass(frozen=True)

@@ -17,6 +17,7 @@ import httpx
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from ..connector_contract import SYNTHETIC_MESSAGE_ID_PREFIX
+from ..dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from .config import DEFAULT_WEIXIN_CDN_BASE_URL
 from .models import (
     WeixinAccount,
@@ -65,7 +66,7 @@ MSG_TYPE_BOT = 2
 MSG_STATE_FINISH = 2
 TYPING_START = 1
 TYPING_STOP = 2
-CONFIG_TIMEOUT_SECONDS = 10.0
+CONFIG_TIMEOUT_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("weixin_config_timeout_seconds", 10.0))
 SESSION_EXPIRED_ERRCODE = -14
 RATE_LIMIT_ERRCODE = -2
 

@@ -27,7 +27,7 @@ from .tools import ToolSpec
 PROVIDER_TRANSPORT_RETRY_AFTER_SECONDS = SYSTEM_DYNAMIC_PARAMETERS.get(
     "provider_retry_after_seconds", 15.0
 )
-PROVIDER_ERROR_MAX_CHARS = 1_000
+PROVIDER_ERROR_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("provider_error_max_chars", 1_000.0))
 
 
 @dataclass(frozen=True)

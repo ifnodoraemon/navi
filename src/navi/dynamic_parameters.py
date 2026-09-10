@@ -109,6 +109,61 @@ SYSTEM_DYNAMIC_PARAMETERS: dict[str, float] = {
     # Self-play and prompt evolution parameters
     "prompt_mutation_temperature": 0.70,
     "prompt_evaluation_threshold": 0.80,
+
+    # State graph context assembly and history parameters
+    "planner_context_message_limit": 200.0,
+    "planner_context_recent_messages": 12.0,
+    "planner_context_max_chars": 12000.0,
+    "planner_context_older_preview_messages": 8.0,
+    "planner_context_older_preview_chars": 220.0,
+    "planner_context_recent_message_max_chars": 2000.0,
+    "planner_memory_item_max_chars": 800.0,
+    "planner_attempt_history_limit": 8.0,
+    "planner_attempt_history_max_chars": 16000.0,
+    "planner_attempt_message_max_chars": 1000.0,
+    "planner_prior_result_max_chars": 4000.0,
+    "planner_ambient_record_limit": 3.0,
+
+    # Semantic checker limits
+    "semantic_checker_attempt_limit": 4.0,
+    "semantic_checker_args_max_chars": 3000.0,
+    "semantic_checker_facts_max_chars": 6000.0,
+    "semantic_checker_message_max_chars": 3000.0,
+    "semantic_checker_evidence_summary_max_chars": 2000.0,
+    "semantic_checker_verdict_error_chars": 200.0,
+    "semantic_checker_verdict_retries": 1.0,
+    "task_result_preview_chars": 240.0,
+
+    # Provider transport retries and execution leases
+    "provider_transport_max_retries": 3.0,
+    "provider_transport_retry_min_seconds": 1.0,
+    "provider_transport_retry_max_seconds": 300.0,
+    "execution_lease_min_seconds": 900.0,
+    "execution_lease_heartbeat_max_seconds": 30.0,
+
+    # Proactive daemon and detector limits
+    "default_port_probe_timeout_seconds": 1.0,
+    "daemon_project_event_concurrency": 4.0,
+    "max_git_status_prompt_chars": 5000.0,
+    "max_log_read_bytes": 512000.0,
+    "max_log_prompt_chars": 100000.0,
+
+    # Tool execution and payload limits
+    "provider_error_max_chars": 1000.0,
+    "skill_file_max_bytes": 200000.0,
+    "search_title_max_chars": 300.0,
+    "search_snippet_max_chars": 1200.0,
+    "search_response_max_bytes": 2000000.0,
+    "search_x_response_max_bytes": 4000000.0,
+
+    # Connector runtime and channel timeouts
+    "connector_idle_timeout_seconds": 120.0,
+    "connector_heartbeat_interval_seconds": 20.0,
+    "telegram_get_file_timeout_seconds": 15.0,
+    "telegram_download_timeout_seconds": 60.0,
+    "weixin_config_timeout_seconds": 10.0,
+    "weixin_context_token_max_age_seconds": 86400.0,
+    "weixin_ingress_stale_after_seconds": 180.0,
 }
 
 

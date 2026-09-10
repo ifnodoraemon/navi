@@ -110,3 +110,26 @@ def test_generate_and_execute_prompt_perturbation(tmp_path: Path) -> None:
 
     overridden = prompt_store.read(spec.target_id)
     assert "Strictly adhere" in overridden
+
+
+def test_generate_prompt_perturbation_domain_specialization(tmp_path: Path) -> None:
+    from navi.credit_assignment import CreditAssignmentEngine
+
+    credit_engine = CreditAssignmentEngine(tmp_path)
+    credit_engine.record_attribution(
+        trace_id="tr_checker",
+        node_type="prompt_layer",
+        target_id="instructions",
+        outcome="failure",
+        failure_domain="checker_blocked",
+        reward=-0.6,
+        delta_applied=-0.6,
+        reason="test_blocked",
+    )
+
+    arena = SelfPlayArena(tmp_path)
+    specs = arena.generate_prompt_perturbations(limit=1)
+    assert len(specs) == 1
+    assert specs[0].hypothesis == "append_grounded_evidence_refinement"
+    assert "verified against grounded context" in specs[0].candidate_content
+

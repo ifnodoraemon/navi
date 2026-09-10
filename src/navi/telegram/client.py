@@ -8,10 +8,11 @@ from typing import Any
 
 import httpx
 
+from ..dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from .models import TelegramAttachment, TelegramUpdate
 
-_GET_FILE_TIMEOUT_SECONDS = 15.0
-_DOWNLOAD_TIMEOUT_SECONDS = 60.0
+_GET_FILE_TIMEOUT_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("telegram_get_file_timeout_seconds", 15.0))
+_DOWNLOAD_TIMEOUT_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("telegram_download_timeout_seconds", 60.0))
 
 # Telegram media message fields in priority order; the first match wins so a
 # message carrying both a document and a photo surfaces one primary payload.

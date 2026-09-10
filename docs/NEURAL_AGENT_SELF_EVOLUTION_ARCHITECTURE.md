@@ -208,6 +208,19 @@ Navi 在全局 150 个源码模块与所有测试中彻底剔除了过程式分�
   * **自博弈全景参数探索（Self-Play Bound Coverage）**：
     * `_PARAMETER_EXPLORATION_BOUNDS` 涵盖所有新增超参，赋能影子试验场（`ShadowSelfPlayArena`）全闭环自动参数演进与免人工晋升。
 
+### 维度 9：执行计算图微观常量动态化与因果域 Prompt 变异特化（已落地）
+* **演进实现**：
+  * **状态转移计算图（State Graph）全要素动态化**：
+    * 上下文装配与历史截断：`planner_context_message_limit`, `planner_context_recent_messages`, `planner_context_max_chars`, `planner_context_older_preview_messages`, `planner_context_older_preview_chars`, `planner_context_recent_message_max_chars`, `planner_memory_item_max_chars`, `planner_attempt_history_limit`, `planner_attempt_history_max_chars`, `planner_attempt_message_max_chars`, `planner_prior_result_max_chars`, `planner_ambient_record_limit`。
+    * 语义校验与证据预算：`semantic_checker_attempt_limit`, `semantic_checker_args_max_chars`, `semantic_checker_facts_max_chars`, `semantic_checker_message_max_chars`, `semantic_checker_evidence_summary_max_chars`, `semantic_checker_verdict_error_chars`, `semantic_checker_verdict_retries`, `task_result_preview_chars`。
+    * 模型传输重试与锁心跳：`provider_transport_max_retries`, `provider_transport_retry_min_seconds`, `provider_transport_retry_max_seconds`, `execution_lease_min_seconds`, `execution_lease_heartbeat_max_seconds`。
+  * **工具、探测器与多渠道 Connector 超参外显化**：
+    * 守护探针与日志：`default_port_probe_timeout_seconds`, `daemon_project_event_concurrency`, `max_git_status_prompt_chars`, `max_log_read_bytes`, `max_log_prompt_chars`。
+    * 技能与搜索：`provider_error_max_chars`, `skill_file_max_bytes`, `search_title_max_chars`, `search_snippet_max_chars`, `search_response_max_bytes`, `search_x_response_max_bytes`。
+    * 连接器通道超时：`connector_idle_timeout_seconds`, `connector_heartbeat_interval_seconds`, `telegram_get_file_timeout_seconds`, `telegram_download_timeout_seconds`, `weixin_config_timeout_seconds`, `weixin_context_token_max_age_seconds`, `weixin_ingress_stale_after_seconds`。
+  * **因果域定向 Prompt 语义变异（Domain-Driven Semantic Mutation）**：
+    * 沙盒自博弈在反传归因问责后，依据具体失败域（Planner 语法、Checker 幻觉证据不足、循环未收敛、安全策略违规）智能匹配特化的自然语言提示词增量补丁，实现类似 TextGrad 机制的模型自我修复演进。
+
 ```
 +=============================================================================+
 |             NAVI NEURAL AGENTIC NETWORK: CLOSED-LOOP TOPOLOGY               |
