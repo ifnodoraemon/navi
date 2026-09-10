@@ -21,6 +21,11 @@ BUILTIN_EVOLUTION_EVAL_CASES: dict[str, dict[str, Any]] = {
         "target_types": ["memory_item", "eval_case", "graph_node"],
         "assertions": [{"type": "json_valid"}],
     },
+    "runtime.parameter.valid": {
+        "id": "runtime.parameter.valid",
+        "target_types": ["memory_parameter", "dynamic_parameter", "system_parameter"],
+        "assertions": [{"type": "parameter_valid"}],
+    },
 }
 
 

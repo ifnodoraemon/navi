@@ -430,11 +430,24 @@ def _check_json_valid(candidate: str, _val: str) -> bool:
         return False
 
 
+def _check_parameter_valid(candidate: str, _val: str) -> bool:
+    try:
+        data = json.loads(candidate)
+        if not isinstance(data, dict):
+            return False
+        if "value" not in data:
+            return False
+        return isinstance(data["value"], (int, float))
+    except (json.JSONDecodeError, TypeError):
+        return False
+
+
 _ASSERTION_EVALUATORS: dict[str, Any] = {
     "contains": lambda cand, val: bool(val) and val in cand,
     "not_contains": lambda cand, val: bool(val) and val not in cand,
     "nonempty": lambda cand, _val: bool(cand.strip()),
     "json_valid": _check_json_valid,
+    "parameter_valid": _check_parameter_valid,
 }
 
 
