@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import { format } from 'date-fns';
-import { Activity, Code, CheckCircle2, XCircle, Search, Clock, ChevronDown, ChevronRight, Zap, Copy, Check, RefreshCw, Timer, ShieldAlert, Layers, Inbox, Send, Download, Play, Pause, Trash2, RotateCcw, Rocket, ListTree, MessageSquare, Database, BarChart2 } from 'lucide-react';
+import { Activity, Code, CheckCircle2, XCircle, Search, ChevronDown, ChevronRight, Zap, Copy, Check, RefreshCw, Timer, ShieldAlert, Layers, Inbox, Send, Download, Play, Pause, Trash2, RotateCcw, Rocket, ListTree, MessageSquare, Database, BarChart2, Terminal, Brain, Sparkles, ArrowRight } from 'lucide-react';
 import { JsonView } from 'react-json-view-lite';
 import 'react-json-view-lite/dist/index.css';
 import ReactMarkdown from 'react-markdown';
@@ -154,6 +154,353 @@ const CollapsibleJson = ({ title, jsonStr, defaultOpen = false }: { title: strin
   );
 };
 
+interface RunInterpretation {
+  chineseTitle: string;
+  category: 'input' | 'llm' | 'tool' | 'checker' | 'decision' | 'output' | 'engine';
+  summary: string;
+  badge?: { text: string; color: string; bg: string };
+  command?: string;
+  query?: string;
+  formattedOutput?: string;
+  isTerminal?: boolean;
+}
+
+const interpretRun = (run: TraceRunView): RunInterpretation => {
+  const name = run.name || '';
+  const isError = run.status === 'error';
+  const isBlocked = run.status === 'blocked';
+
+  if (name === 'Channel Receive') {
+    const msg = run.inputs?.message?.text || run.inputs?.message || run.inputs?.text || run.metadata?.objective || '';
+    const text = typeof msg === 'string' ? msg : JSON.stringify(msg);
+    return {
+      chineseTitle: '收到用户消息 (User Input)',
+      category: 'input',
+      summary: text ? `用户输入：“${text.slice(0, 150)}${text.length > 150 ? '...' : ''}”` : '系统接收到外部通道消息',
+      badge: { text: '用户输入', color: '#a78bfa', bg: 'rgba(167, 139, 250, 0.15)' }
+    };
+  }
+
+  if (name === 'Channel Send') {
+    const msg = run.outputs?.message?.text || run.outputs?.message || run.inputs?.message?.text || run.inputs?.message || '';
+    const text = typeof msg === 'string' ? msg : '';
+    return {
+      chineseTitle: '向用户发送最终回复 (Assistant Reply)',
+      category: 'output',
+      summary: text ? `正式交付答复：“${text.slice(0, 150)}${text.length > 150 ? '...' : ''}”` : '经过思考规划、工具调用与质检核验，向用户正式投递结果。',
+      formattedOutput: text,
+      badge: { text: '发送成功', color: '#34d399', bg: 'rgba(52, 211, 153, 0.15)' }
+    };
+  }
+
+  if (name === 'Planner Reasoning' || run.run_type === 'llm') {
+    if (isError) {
+      const err = run.outputs?.error || run.outputs?.exception || '参数校验不匹配';
+      return {
+        chineseTitle: '大模型思考规划 (Planner Reasoning)',
+        category: 'llm',
+        summary: `⚠️ 规划参数异常：大模型生成的工具参数不符合规范（${String(err).slice(0, 100)}），系统已自动捕获并触发自愈重试。`,
+        badge: { text: '参数超限/自愈', color: '#fca5a5', bg: 'rgba(239, 68, 68, 0.15)' }
+      };
+    }
+    const sec = Math.max(0, run.end_time - run.start_time).toFixed(1);
+    return {
+      chineseTitle: '大模型思考规划 (Planner Reasoning)',
+      category: 'llm',
+      summary: `大模型阅读上下文与事实证据，耗时 ${sec}s 深入思考，并决定接下来调用的工具。`,
+      badge: { text: `深度思考 ${sec}s`, color: '#fcd34d', bg: 'rgba(252, 211, 77, 0.15)' }
+    };
+  }
+
+  if (name.includes('checker')) {
+    const evidenceSummary = run.outputs?.evidence_summary || '';
+    if (isBlocked || isError) {
+      return {
+        chineseTitle: '质量门禁审核 (Checker Gate)',
+        category: 'checker',
+        summary: `🛡️ 质检拦截：检测到回答缺乏充分的事实凭据（${evidenceSummary || '缺少检索或记忆证据'}），系统驳回草率回复，强制要求模型调工具验证。`,
+        badge: { text: '质检拦截 (防幻觉)', color: '#fca5a5', bg: 'rgba(239, 68, 68, 0.15)' }
+      };
+    }
+    return {
+      chineseTitle: '质量门禁审核 (Checker Gate)',
+      category: 'checker',
+      summary: `✅ 质检通过：事实证据核验合格（${evidenceSummary || '回答具备确凿依据'}），准许向用户交付。`,
+      badge: { text: '质检合格', color: '#34d399', bg: 'rgba(52, 211, 153, 0.15)' }
+    };
+  }
+
+  if (name.includes('shell.run')) {
+    const cmdArgs = run.inputs?.args?.command || run.inputs?.command || [];
+    const cmdStr = Array.isArray(cmdArgs) ? cmdArgs.join(' ') : String(cmdArgs);
+    const stdout = run.outputs?.facts?.stdout || run.outputs?.stdout || '';
+    return {
+      chineseTitle: '执行终端命令 (Shell Command)',
+      category: 'tool',
+      summary: `在系统主机上运行命令行工具查找文件、执行脚本或诊断。`,
+      command: cmdStr ? `$ ${cmdStr}` : '',
+      formattedOutput: stdout ? String(stdout).slice(0, 800) : '',
+      isTerminal: true,
+      badge: { text: '终端命令', color: '#60a5fa', bg: 'rgba(96, 165, 250, 0.15)' }
+    };
+  }
+
+  if (name.includes('context.search')) {
+    const q = run.inputs?.args?.query || run.inputs?.query || '';
+    return {
+      chineseTitle: '检索聊天记录与记忆库 (Memory Search)',
+      category: 'tool',
+      query: String(q),
+      summary: `在历史会话数据库和长期记忆库中深度搜索关键词：“${q}”。`,
+      badge: { text: '记忆检索', color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.15)' }
+    };
+  }
+
+  if (name.includes('respond')) {
+    const msg = run.inputs?.args?.message || run.inputs?.message || '';
+    return {
+      chineseTitle: '拟定用户答复 (Draft Response)',
+      category: 'tool',
+      summary: '大模型已组织完成对用户的回复文本，提交给质检门禁核验。',
+      formattedOutput: typeof msg === 'string' ? msg : '',
+      badge: { text: '拟定回复', color: '#818cf8', bg: 'rgba(129, 140, 248, 0.15)' }
+    };
+  }
+
+  if (name.startsWith('Decision:')) {
+    const dec = name.replace('Decision:', '').trim();
+    if (dec === 'converged') {
+      return {
+        chineseTitle: '系统调度：目标达成 (Converged)',
+        category: 'decision',
+        summary: '质检核验全部达标，系统判定本轮对话目标圆满达成，执行收敛结单。',
+        badge: { text: '目标达成', color: '#34d399', bg: 'rgba(52, 211, 153, 0.15)' }
+      };
+    }
+    if (dec === 'recover') {
+      return {
+        chineseTitle: '系统调度：自主自愈重试 (Self-Healing Recovery)',
+        category: 'decision',
+        summary: '上一环节未达标或遇到报错，调度中枢自动触发自愈机制，指导大模型修正策略。',
+        badge: { text: '自愈纠错', color: '#fbbf24', bg: 'rgba(251, 191, 36, 0.15)' }
+      };
+    }
+    return {
+      chineseTitle: `系统调度：流程推进 (${dec})`,
+      category: 'decision',
+      summary: '当前步骤处理完毕，调度中枢推动状态机进入下一环节。',
+      badge: { text: '调度推进', color: '#93c5fd', bg: 'rgba(147, 197, 253, 0.15)' }
+    };
+  }
+
+  if (run.run_type === 'tool') {
+    return {
+      chineseTitle: `执行工具：${name.replace('Tool: ', '')}`,
+      category: 'tool',
+      summary: '系统代理大模型执行具体业务工具。',
+      badge: { text: '工具调用', color: '#60a5fa', bg: 'rgba(96, 165, 250, 0.15)' }
+    };
+  }
+
+  if (run.run_type === 'engine' || name.startsWith('Loop')) {
+    return {
+      chineseTitle: `引擎内部存档：${name}`,
+      category: 'engine',
+      summary: 'Navi 持久化运行时状态存档与心跳，用于断电恢复与分布式调度。',
+      badge: { text: '内部心跳', color: '#9ca3af', bg: 'rgba(156, 163, 175, 0.15)' }
+    };
+  }
+
+  return {
+    chineseTitle: name,
+    category: 'engine',
+    summary: '执行步骤环节',
+  };
+};
+
+const HumanInterpretCard = ({ run }: { run: TraceRunView }) => {
+  const info = interpretRun(run);
+  return (
+    <div className="human-interpret-box">
+      <div className="human-interpret-header">
+        <div className="human-interpret-title">
+          <Sparkles size={14} color="var(--accent-color)" />
+          <span>{info.chineseTitle}</span>
+        </div>
+        {info.badge && (
+          <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: 4, background: info.badge.bg, color: info.badge.color, fontWeight: 600 }}>
+            {info.badge.text}
+          </span>
+        )}
+      </div>
+      <div className="human-interpret-summary">
+        {info.summary}
+      </div>
+      {info.command && (
+        <div className="human-terminal-command">
+          {info.command}
+        </div>
+      )}
+      {info.formattedOutput && info.isTerminal && (
+        <div className="human-terminal-output">
+          {info.formattedOutput}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const StorylineBanner = ({ allRuns }: { allRuns: TraceRunView[] }) => {
+  const milestones: {
+    id: string;
+    icon: React.ReactNode;
+    label: string;
+    desc: string;
+    duration?: string;
+    status: 'success' | 'error' | 'blocked' | 'normal';
+  }[] = [];
+
+  const inputRun = allRuns.find(r => r.name === 'Channel Receive');
+  if (inputRun) {
+    const msg = inputRun.inputs?.message?.text || inputRun.inputs?.message || inputRun.inputs?.text || inputRun.metadata?.objective || '';
+    const text = typeof msg === 'string' ? msg : '';
+    milestones.push({
+      id: inputRun.id,
+      icon: <Inbox size={14} color="#a78bfa" />,
+      label: '收到输入',
+      desc: text ? text.slice(0, 30) : '通道消息接入',
+      status: 'normal',
+    });
+  }
+
+  const significant = allRuns.filter(r => {
+    if (r.run_type === 'llm') return true;
+    if (r.run_type === 'tool') return true;
+    if (r.name.includes('checker')) return true;
+    if (r.name === 'Decision: recover') return true;
+    return false;
+  }).sort((a,b) => a.start_time - b.start_time);
+
+  significant.forEach(r => {
+    const dur = Math.max(0, r.end_time - r.start_time);
+    const durStr = dur > 0 ? (dur < 1 ? `${Math.round(dur*1000)}ms` : `${dur.toFixed(1)}s`) : undefined;
+    const isErr = r.status === 'error';
+    const isBlk = r.status === 'blocked';
+
+    if (r.name === 'Planner Reasoning' || r.run_type === 'llm') {
+      if (isErr) {
+        milestones.push({
+          id: r.id,
+          icon: <XCircle size={14} color="#fca5a5" />,
+          label: '规划异常 (自愈)',
+          desc: '参数超出限制，触发自愈重试',
+          duration: durStr,
+          status: 'error',
+        });
+      } else {
+        milestones.push({
+          id: r.id,
+          icon: <Brain size={14} color="#fcd34d" />,
+          label: '思维规划',
+          desc: '大模型思考并决定调用工具',
+          duration: durStr,
+          status: 'normal',
+        });
+      }
+    } else if (r.name.includes('checker')) {
+      if (isBlk || isErr) {
+        milestones.push({
+          id: r.id,
+          icon: <ShieldAlert size={14} color="#fca5a5" />,
+          label: '质检拦截',
+          desc: '缺乏充分事实证据，驳回回答',
+          status: 'blocked',
+        });
+      } else {
+        milestones.push({
+          id: r.id,
+          icon: <CheckCircle2 size={14} color="#34d399" />,
+          label: '质检通过',
+          desc: '事实证据核验合格',
+          status: 'success',
+        });
+      }
+    } else if (r.name === 'Decision: recover') {
+      milestones.push({
+        id: r.id,
+        icon: <RotateCcw size={14} color="#fbbf24" />,
+        label: '自愈重试',
+        desc: '调度中枢重新组织策略',
+        status: 'normal',
+      });
+    } else if (r.run_type === 'tool') {
+      const toolName = r.name.replace('Tool: ', '');
+      let desc = '执行工具动作';
+      if (toolName === 'shell.run') desc = '终端文件搜索/执行';
+      if (toolName === 'context.search') desc = '检索聊天与记忆库';
+      if (toolName === 'respond') desc = '拟定最终回答';
+      milestones.push({
+        id: r.id,
+        icon: <Terminal size={14} color="#60a5fa" />,
+        label: toolName,
+        desc,
+        duration: durStr,
+        status: isErr ? 'error' : 'success',
+      });
+    }
+  });
+
+  const sendRun = allRuns.find(r => r.name === 'Channel Send');
+  if (sendRun) {
+    milestones.push({
+      id: sendRun.id,
+      icon: <Send size={14} color="#34d399" />,
+      label: '回复送达',
+      desc: '消息正式发送给用户',
+      status: 'success',
+    });
+  }
+
+  if (milestones.length === 0) return null;
+
+  return (
+    <div className="storyline-card">
+      <div className="storyline-header">
+        <div className="storyline-title">
+          <Sparkles size={16} color="var(--accent-color)" />
+          <span>业务执行故事线 (Execution Storyline)</span>
+          <span style={{ fontSize: '0.75rem', opacity: 0.6, fontWeight: 400, marginLeft: 8 }}>
+            共 {milestones.length} 个关键里程碑环节
+          </span>
+        </div>
+      </div>
+      <div className="storyline-steps">
+        {milestones.map((m, idx) => (
+          <div key={`${m.id}-${idx}`} className="storyline-step-item">
+            <div className={`storyline-step-box ${m.status}`} title={m.desc}>
+              <div className="storyline-step-top">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {m.icon}
+                  <span className="storyline-step-label">{idx + 1}. {m.label}</span>
+                </div>
+                {m.duration && (
+                  <span style={{ fontSize: '0.68rem', opacity: 0.7, fontFamily: 'monospace' }}>{m.duration}</span>
+                )}
+              </div>
+              <div className="storyline-step-desc">{m.desc}</div>
+            </div>
+            {idx < milestones.length - 1 && (
+              <div className="storyline-step-arrow">
+                <ArrowRight size={14} />
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 const RunNode = ({
   run,
   allRuns,
@@ -216,6 +563,7 @@ const RunNode = ({
   const isError = run.status === 'error';
   const isBlocked = run.status === 'blocked';
   const isRunning = run.status === 'running';
+  const humanInfo = interpretRun(run);
 
   const statusClass = isError ? 'error' : isBlocked ? 'blocked' : isRunning ? 'running' : 'success';
   let StatusIcon = isError ? XCircle : isBlocked ? ShieldAlert : CheckCircle2;
@@ -344,8 +692,14 @@ const RunNode = ({
                      🔥 BOTTLENECK
                    </span>
                  )}
-                 {run.name}
-                 {tokenDisplay}
+                  {humanInfo.badge && (
+                    <span style={{ marginRight: 8, fontSize: '0.65rem', fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: humanInfo.badge.bg, color: humanInfo.badge.color, border: `1px solid ${humanInfo.badge.color}40`, letterSpacing: '0.02em' }}>
+                      {humanInfo.badge.text}
+                    </span>
+                  )}
+                  <span style={{ fontWeight: 600, marginRight: 6 }}>{humanInfo.chineseTitle}</span>
+                  <span style={{ fontSize: '0.72rem', opacity: 0.5, fontFamily: 'monospace' }}>({run.name})</span>
+                  {tokenDisplay}
               </div>
               <div className="run-meta">
                  <span>{format(new Date(run.start_time * 1000), 'HH:mm:ss.SSS')}</span>
@@ -368,6 +722,7 @@ const RunNode = ({
 
       {expanded && (
         <div className="run-body">
+          <HumanInterpretCard run={run} />
           {runContent}
           {childrenContent}
         </div>
@@ -471,7 +826,8 @@ function App() {
   const [viewMode, setViewMode] = useState<'tree' | 'chat' | 'timeline'>('tree');
   const [filterLLM, setFilterLLM] = useState(true);
   const [filterTool, setFilterTool] = useState(true);
-  const [filterEngine, setFilterEngine] = useState(true);
+  const [filterEngine, setFilterEngine] = useState(false);
+  const [showLoopControl, setShowLoopControl] = useState(false);
 
   // Live Mode
   const [autoRefresh, setAutoRefresh] = useState(false);
@@ -946,35 +1302,48 @@ function App() {
                   onClick={() => loadTrace(meta.trace_id)}
                   style={meta.thread_id ? { borderLeft: `4px solid ${threadColor}`, paddingLeft: 12, borderTopLeftRadius: 2, borderBottomLeftRadius: 2 } : {}}
                 >
-                  <div className="trace-id" style={{ wordBreak: 'break-all', fontSize: '0.75rem', lineHeight: 1.4, color: meta.has_error ? 'var(--error-color)' : 'inherit', fontWeight: meta.has_error ? 600 : 'normal', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-                    <span>
-                      {meta.has_error && <ShieldAlert size={12} style={{display: 'inline', marginRight: 4}}/>}
-                      {meta.trace_id}
-                    </span>
-                    <div style={{ display: 'flex', alignItems: 'center' }}>
-                      {meta.thread_id && (
-                         <span style={{ fontSize: '0.65rem', padding: '2px 4px', borderRadius: 4, background: threadColor, color: '#000', whiteSpace: 'nowrap', marginLeft: 6, fontWeight: 700 }} title={`Session: ${meta.thread_id}`}>
-                           SESSION
-                         </span>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 6 }}>
+                    <div style={{
+                      fontSize: '0.86rem',
+                      fontWeight: 600,
+                      color: meta.has_error ? '#fca5a5' : '#f3f4f6',
+                      lineHeight: 1.35,
+                      flex: 1,
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden'
+                    }} title={meta.preview_text || meta.trace_id}>
+                      {meta.preview_text ? (
+                        <span>💬 {meta.preview_text}</span>
+                      ) : (
+                        <span style={{ fontFamily: 'monospace', opacity: 0.8 }}>⚡ {meta.trace_id.slice(0, 16)}...</span>
                       )}
-                      {meta.outcome && meta.outcome !== 'success' && meta.outcome !== 'unknown' && (
-                        <span style={{ fontSize: '0.65rem', padding: '2px 4px', borderRadius: 4, background: meta.outcome === 'failure' ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)', color: meta.outcome === 'failure' ? '#fca5a5' : '#fcd34d', whiteSpace: 'nowrap', marginLeft: 6 }}>
-                          {meta.failure_domain ? meta.failure_domain.replace(/_/g, ' ') : meta.outcome}
-                        </span>
-                      )}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                      <span style={{
+                        fontSize: '0.65rem',
+                        padding: '2px 5px',
+                        borderRadius: 4,
+                        background: meta.has_error ? 'rgba(239,68,68,0.2)' : 'rgba(16,185,129,0.18)',
+                        color: meta.has_error ? '#fca5a5' : '#34d399',
+                        fontWeight: 600,
+                        whiteSpace: 'nowrap'
+                      }}>
+                        {meta.has_error ? '自愈/重试' : '成功'}
+                      </span>
                     </div>
                   </div>
-                  {meta.preview_text && (
-                    <div style={{ marginTop: 6, fontSize: '0.8rem', opacity: 0.8, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', color: 'var(--text-secondary)' }}>
-                      {meta.preview_text}
-                    </div>
-                  )}
-                  <div className="trace-date" style={{ marginTop: 6, display: 'flex', justifyContent: 'space-between' }}>
-                    <span>
-                      <Clock size={12} style={{ display: 'inline', marginRight: 4, opacity: 0.7 }} />
-                      {meta.trace_id.substring(0, 8)} {meta.trace_id.substring(9, 15).replace(/(..)(..)(..)/, '$1:$2:$3')}
+                  <div className="trace-date" style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem' }}>
+                    <span style={{ fontFamily: 'monospace', opacity: 0.6 }}>
+                      ID: {meta.trace_id.substring(0, 10)}...
                     </span>
-                    {meta.duration > 0 && <span style={{ opacity: 0.8 }}><Timer size={12} style={{ display: 'inline', marginRight: 2 }} /> {meta.duration.toFixed(2)}s</span>}
+                    {meta.duration > 0 && (
+                      <span style={{ opacity: 0.8, fontFamily: 'monospace' }}>
+                        <Timer size={11} style={{ display: 'inline', marginRight: 2 }} />
+                        {meta.duration.toFixed(1)}s
+                      </span>
+                    )}
                   </div>
                 </div>
               )})}
@@ -1121,23 +1490,36 @@ function App() {
               </div>
             </div>
 
+            {/* 1. Human Storyline Banner */}
+            <StorylineBanner allRuns={allRuns} />
+
+            {/* 2. Collapsible Engine Internals (Loop Control & Budgets) */}
             {(loopRunSummaries.length > 0 || loopDecisionRecords.length > 0) && (
-              <div className="glass-panel" style={{ padding: 18, borderRadius: 8, marginBottom: 24 }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 14, flexWrap: 'wrap' }}>
+              <div className="glass-panel" style={{ padding: 14, borderRadius: 8, marginBottom: 24 }}>
+                <div
+                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, cursor: 'pointer' }}
+                  onClick={() => setShowLoopControl(!showLoopControl)}
+                >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <ListTree size={16} color="var(--accent-color)" />
-                    <h3 style={{ margin: 0, fontSize: '0.95rem' }}>Loop Control</h3>
+                    <h3 style={{ margin: 0, fontSize: '0.95rem' }}>⚙️ 底层引擎状态与调度调试 (Engine Internals)</h3>
+                    <span style={{ fontSize: '0.72rem', opacity: 0.6 }}>
+                      {showLoopControl ? '（点击收起底层数据）' : '（点击展开查看调度转移与预算详情）'}
+                    </span>
                   </div>
-                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <span className="badge">decisions {loopDecisionRecords.length}</span>
                     <span className="badge">transitions {transitionDecisionRecords.length}</span>
                     <span className="badge">gates {gateDecisionRecords.length}</span>
-                    <span className="badge">side effects {sideEffectRows.length}</span>
                     <span className="badge" style={{ color: blockedLoopDecisionCount ? '#fca5a5' : '#34d399' }}>
                       blocked {blockedLoopDecisionCount}
                     </span>
+                    {showLoopControl ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                   </div>
                 </div>
+
+                {showLoopControl && (
+                  <div style={{ marginTop: 16 }}>
 
                 {latestBudgetState && (
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 16 }}>
@@ -1271,6 +1653,8 @@ function App() {
                     </table>
                   </div>
                 )}
+                </div>
+              )}
               </div>
             )}
 
@@ -1287,21 +1671,90 @@ function App() {
 
             {viewMode === 'chat' && (
               <div className="chat-view-container glass-panel" style={{ padding: 24, borderRadius: 8, display: 'flex', flexDirection: 'column', gap: 16 }}>
-                {allRuns.filter(r => r.name === 'Channel Receive' || r.name === 'Channel Send').sort((a,b) => a.start_time - b.start_time).map(msg => {
-                  const isUser = msg.name === 'Channel Receive';
-                  const text = isUser ? (msg.inputs?.message?.text || msg.inputs?.message || msg.inputs?.text || JSON.stringify(msg.inputs)) : (msg.inputs?.message?.text || msg.inputs?.message || msg.inputs?.text || msg.outputs?.message?.text || msg.outputs?.message || JSON.stringify(msg.outputs));
+                {(() => {
+                  const inputRun = allRuns.find(r => r.name === 'Channel Receive');
+                  const userText = inputRun?.inputs?.message?.text || inputRun?.inputs?.message || inputRun?.inputs?.text || inputRun?.metadata?.objective || '';
+
+                  const sendRun = allRuns.find(r => r.name === 'Channel Send');
+                  const botText = sendRun?.outputs?.message?.text || sendRun?.outputs?.message || sendRun?.inputs?.message?.text || sendRun?.inputs?.message || '';
+
+                  const thoughtAndToolRuns = allRuns.filter(r => {
+                    if (r.name === 'Channel Receive' || r.name === 'Channel Send' || r.name === 'Trace' || r.name === 'Turn') return false;
+                    if (r.run_type === 'llm' || r.run_type === 'tool' || r.name.includes('checker') || r.name.includes('Decision: recover')) return true;
+                    return false;
+                  }).sort((a,b) => a.start_time - b.start_time);
+
                   return (
-                    <div key={msg.id} style={{ alignSelf: isUser ? 'flex-end' : 'flex-start', maxWidth: '80%', background: isUser ? 'rgba(139, 92, 246, 0.2)' : 'rgba(0,0,0,0.3)', border: isUser ? '1px solid rgba(139, 92, 246, 0.3)' : '1px solid rgba(255,255,255,0.1)', padding: '12px 16px', borderRadius: 12, borderBottomRightRadius: isUser ? 0 : 12, borderBottomLeftRadius: !isUser ? 0 : 12 }}>
-                      <div style={{ fontSize: '0.75rem', opacity: 0.5, marginBottom: 6, textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 6 }}>
-                        {isUser ? <Inbox size={12}/> : <Send size={12}/>}
-                        {isUser ? 'User' : 'Assistant'}
-                      </div>
-                      <div className="markdown-body" style={{ fontSize: '0.95rem' }}>
-                        <SmartMarkdown>{typeof text === 'string' ? text : JSON.stringify(text)}</SmartMarkdown>
-                      </div>
-                    </div>
+                    <>
+                      {/* User Bubble */}
+                      {userText && (
+                        <div style={{ alignSelf: 'flex-end', maxWidth: '80%', background: 'rgba(139, 92, 246, 0.2)', border: '1px solid rgba(139, 92, 246, 0.3)', padding: '12px 16px', borderRadius: 12, borderBottomRightRadius: 0 }}>
+                          <div style={{ fontSize: '0.75rem', opacity: 0.6, marginBottom: 6, textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <Inbox size={12} />
+                            <span>User (用户提问)</span>
+                          </div>
+                          <div className="markdown-body" style={{ fontSize: '0.95rem' }}>
+                            <SmartMarkdown>{typeof userText === 'string' ? userText : JSON.stringify(userText)}</SmartMarkdown>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Intermediate Agent Thinking & Action Flow */}
+                      {thoughtAndToolRuns.length > 0 && (
+                        <div style={{ alignSelf: 'center', width: '90%', margin: '8px 0' }}>
+                          <details style={{ background: 'rgba(255, 255, 255, 0.03)', border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: 8, padding: '10px 14px' }}>
+                            <summary style={{ cursor: 'pointer', fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <Brain size={15} color="#fcd34d" />
+                                <span>Agent 思考与行动过程 ({thoughtAndToolRuns.length} 个环节)</span>
+                              </div>
+                              <span style={{ fontSize: '0.72rem', opacity: 0.6 }}>点击展开/收起详情</span>
+                            </summary>
+                            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                              {thoughtAndToolRuns.map((r, idx) => {
+                                const info = interpretRun(r);
+                                const dur = Math.max(0, r.end_time - r.start_time);
+                                const durStr = dur > 0 ? (dur < 1 ? `${Math.round(dur*1000)}ms` : `${dur.toFixed(1)}s`) : '';
+                                return (
+                                  <div key={idx} className="chat-step-item">
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                        <Sparkles size={12} color="var(--accent-color)" />
+                                        <span style={{ fontWeight: 600 }}>{info.chineseTitle}</span>
+                                      </div>
+                                      {durStr && <span style={{ opacity: 0.6, fontSize: '0.7rem' }}>{durStr}</span>}
+                                    </div>
+                                    <div style={{ fontSize: '0.78rem', color: '#9ca3af', marginTop: 3 }}>
+                                      {info.summary}
+                                    </div>
+                                    {info.command && (
+                                      <div className="human-terminal-command" style={{ marginTop: 4, padding: '4px 8px', fontSize: '0.72rem' }}>
+                                        {info.command}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </details>
+                        </div>
+                      )}
+
+                      {/* Assistant Bubble */}
+                      {botText && (
+                        <div style={{ alignSelf: 'flex-start', maxWidth: '85%', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', padding: '14px 18px', borderRadius: 12, borderBottomLeftRadius: 0 }}>
+                          <div style={{ fontSize: '0.75rem', opacity: 0.6, marginBottom: 6, textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <Send size={12} />
+                            <span>Navi Assistant (机器人答复)</span>
+                          </div>
+                          <div className="markdown-body" style={{ fontSize: '0.95rem' }}>
+                            <SmartMarkdown>{typeof botText === 'string' ? botText : JSON.stringify(botText)}</SmartMarkdown>
+                          </div>
+                        </div>
+                      )}
+                    </>
                   );
-                })}
+                })()}
               </div>
             )}
 

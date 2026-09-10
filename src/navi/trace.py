@@ -374,7 +374,8 @@ class TraceStore:
 
     def list_run_views(self, trace_id: str, *, limit: int = 5000, offset: int = 0) -> list[TraceRunView]:
         events = self.list_events(trace_id, limit=limit, offset=offset)
-        views = _trace_run_views(events, trace_id=trace_id)
+        objective = self._goal_objectives_for_traces([trace_id]).get(trace_id, "")
+        views = _trace_run_views(events, trace_id=trace_id, objective=objective)
         return _merge_run_views(views, _loop_run_views_for_trace(self.home, trace_id, events))
 
     def list_loop_run_details(self, trace_id: str, *, limit: int = 5000) -> list[dict[str, Any]]:
@@ -478,17 +479,114 @@ class TraceStore:
                 if raw_input and raw_input.strip() and raw_input != "{}":
                     try:
                         parsed = json.loads(raw_input)
-                        preview_text = parsed.get("text", parsed.get("message", msg))
+                        if isinstance(parsed, dict):
+                            preview_text = str(parsed.get("text") or parsed.get("message") or "")
+                            facts = parsed.get("facts")
+                            if isinstance(facts, dict) and not preview_text:
+                                preview_text = str(facts.get("text") or facts.get("message") or facts.get("query") or "")
                     except Exception:
                         pass
                 if not preview_text:
                     preview_text = msg
                 first_event_map[tid] = preview_text
+
+            missing_tids = [m["trace_id"] for m in metas if not first_event_map.get(m["trace_id"])]
+            if missing_tids:
+                goal_objectives = self._goal_objectives_for_traces(missing_tids)
+                for tid, obj in goal_objectives.items():
+                    if obj:
+                        first_event_map[tid] = obj
+
             for meta in metas:
                 meta["preview_text"] = first_event_map.get(meta["trace_id"], "")
                 meta["thread_id"] = thread_by_trace.get(meta["trace_id"], "")
 
         return metas
+
+    def _goal_objectives_for_traces(self, trace_ids: list[str]) -> dict[str, str]:
+        if not trace_ids:
+            return {}
+        results: dict[str, str] = {}
+        goals_db = db_paths(self.home).goals
+        if not goals_db.exists():
+            return results
+        try:
+            with connect(goals_db) as conn:
+                q = ",".join("?" * len(trace_ids))
+                rows = conn.execute(
+                    f"SELECT trace_id, objective FROM goals WHERE trace_id IN ({q}) AND objective != ''",
+                    tuple(trace_ids),
+                ).fetchall()
+                for r in rows:
+                    if r[0] and r[0] not in results:
+                        results[r[0]] = str(r[1])
+                id_rows = conn.execute(
+                    f"SELECT id, objective FROM goals WHERE id IN ({q}) AND objective != ''",
+                    tuple(trace_ids),
+                ).fetchall()
+                for r in id_rows:
+                    if r[0] and r[0] not in results:
+                        results[r[0]] = str(r[1])
+        except Exception:
+            pass
+
+        remaining = [tid for tid in trace_ids if tid not in results]
+        if not remaining:
+            return results
+
+        loop_db = db_paths(self.home).loop_runs
+        if not loop_db.exists():
+            return results
+
+        run_map: dict[str, str] = {}
+        try:
+            with connect(self.db_path) as conn:
+                q = ",".join("?" * len(remaining))
+                event_rows = conn.execute(
+                    f"SELECT DISTINCT trace_id, run_id FROM trace_events WHERE trace_id IN ({q}) AND run_id != ''",
+                    tuple(remaining),
+                ).fetchall()
+                for r in event_rows:
+                    if r[1]:
+                        run_map[r[1]] = r[0]
+        except Exception:
+            pass
+
+        if not run_map:
+            return results
+
+        goal_map: dict[str, str] = {}
+        try:
+            with connect(loop_db) as conn:
+                q = ",".join("?" * len(run_map))
+                loop_rows = conn.execute(
+                    f"SELECT id, goal_id FROM loop_runs WHERE id IN ({q}) AND goal_id != ''",
+                    tuple(run_map.keys()),
+                ).fetchall()
+                for r in loop_rows:
+                    if r[1]:
+                        goal_map[r[1]] = run_map[r[0]]
+        except Exception:
+            pass
+
+        if not goal_map:
+            return results
+
+        try:
+            with connect(goals_db) as conn:
+                q = ",".join("?" * len(goal_map))
+                g_rows = conn.execute(
+                    f"SELECT id, objective FROM goals WHERE id IN ({q}) AND objective != ''",
+                    tuple(goal_map.keys()),
+                ).fetchall()
+                for r in g_rows:
+                    target_tid = goal_map.get(r[0])
+                    if target_tid and target_tid not in results:
+                        results[target_tid] = str(r[1])
+        except Exception:
+            pass
+
+        return results
 
     def delete_traces(self, trace_id: str | None = None) -> dict[str, Any]:
         with connect(self.db_path) as conn:
@@ -817,7 +915,9 @@ def _event_facts(event: TraceEvent) -> dict[str, Any]:
     return result
 
 
-def _trace_run_views(events: list[TraceEvent], *, trace_id: str) -> list[TraceRunView]:
+def _trace_run_views(
+    events: list[TraceEvent], *, trace_id: str, objective: str = ""
+) -> list[TraceRunView]:
     if not events:
         return []
 
@@ -980,6 +1080,25 @@ def _trace_run_views(events: list[TraceEvent], *, trace_id: str) -> list[TraceRu
                         end_time=max(c.end_time for c in children),
                         status=status,
                     )
+
+    if objective and not any(v.name == "Channel Receive" for v in views):
+        min_time = min((e.created_at for e in events), default=0.0)
+        user_view = TraceRunView(
+            id=f"input_{trace_id}",
+            trace_id=trace_id,
+            parent_run_id=trace_id,
+            name="Channel Receive",
+            run_type=TraceRunType.CHAIN,
+            status=TraceRunStatus.SUCCESS,
+            start_time=min_time,
+            end_time=min_time,
+            thread_id=first_session_id,
+            inputs={"message": {"text": objective}},
+            outputs={},
+            tags=("navi", "goal_objective"),
+            metadata={"objective": objective},
+        )
+        views.insert(1, user_view)
 
     return views
 
