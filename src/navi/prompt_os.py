@@ -7,13 +7,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from .operating_context import OperatingContext, PromptLayer, permission_allows
+from .dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from .model_facts import project_model_facts
+from .operating_context import OperatingContext, PromptLayer, permission_allows
 from .provider import ChatMessage
 from .specs_data import PROMPT_ASSEMBLIES_SPEC, SYSCALL_PLANNER_SPEC
 from .tools import ToolSpec
 
-PLANNER_RUNTIME_FACT_MAX_DEPTH = 8
+PLANNER_RUNTIME_FACT_MAX_DEPTH = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_fact_max_depth", 8.0))
 
 
 @dataclass(frozen=True)
@@ -186,7 +187,7 @@ def assemble_planner_turn_input(
         }
         projected_runtime_facts = project_model_facts(
             facts_for_projection,
-            max_depth=PLANNER_RUNTIME_FACT_MAX_DEPTH,
+            max_depth=int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_fact_max_depth", PLANNER_RUNTIME_FACT_MAX_DEPTH)),
         )
         if verification_failure.strip():
             blocks.append(

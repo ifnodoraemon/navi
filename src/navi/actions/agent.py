@@ -17,17 +17,18 @@ from ..loop_control_service import LoopControlService, OpenGoalRequest
 from ..loop_contracts import LoopSpec, LoopTerminalState
 from ..operating_context import permission_allows
 from ..result import Conflict, NotFound, PermissionDenied, SchemaMismatch, guarded
+from ..dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from ..runs import RunStore
 from ..tools import ToolSpec
 from .helpers import arg_text as _arg_text, fact_result as _fact_result
 
 
-MAX_ACTIVE_CHILDREN = 3
-MAX_CHILD_TIMEOUT_SECONDS = 900
-MAX_CHILD_TOKEN_BUDGET = 50_000
-MAX_CHILD_CALL_BUDGET = 12
-MAX_CHILD_COST_BUDGET = 2.0
-MAX_CHILD_QPS = 5
+MAX_ACTIVE_CHILDREN = int(SYSTEM_DYNAMIC_PARAMETERS.get("child_max_active", 3.0))
+MAX_CHILD_TIMEOUT_SECONDS = int(SYSTEM_DYNAMIC_PARAMETERS.get("child_max_timeout_seconds", 900.0))
+MAX_CHILD_TOKEN_BUDGET = int(SYSTEM_DYNAMIC_PARAMETERS.get("child_max_token_budget", 50_000.0))
+MAX_CHILD_CALL_BUDGET = int(SYSTEM_DYNAMIC_PARAMETERS.get("child_max_call_budget", 12.0))
+MAX_CHILD_COST_BUDGET = float(SYSTEM_DYNAMIC_PARAMETERS.get("child_max_cost_budget", 2.0))
+MAX_CHILD_QPS = int(SYSTEM_DYNAMIC_PARAMETERS.get("child_max_qps", 5.0))
 
 _CHILD_WORK_PERMISSION_CEILING = "network"
 _CHILD_REPORT_CAPABILITY = "agent.report"

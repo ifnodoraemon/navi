@@ -192,5 +192,71 @@ Navi 在全局 150 个源码模块与所有测试中彻底剔除了过程式分�
   * 在 `src/navi/loop_runs.py` 中将 Loop 执行声明与争抢租约（`claim_for_execution`）由硬编码 180.0s 切换为从 `SYSTEM_DYNAMIC_PARAMETERS.get("saga_lease_timeout_turn", 120.0)` 动态获取。
   * 消除分布式/守护轮询争抢中的硬编码静态常量，全面实现弹性时间可塑性。
 
+### 维度 8：全域超参连续可塑性与双向信用强化（已落地）
+* **演进实现**：
+  * **动态化剩余所有静态数值孤岛**：
+    * 守护后台轮询间隔：`daemon_poll_interval_seconds` (60.0s)
+    * 瞬态执行归档保存期：`transient_retention_seconds` (86400.0s)
+    * 前向事实投影深度与字符预算：`planner_fact_max_depth` (8.0), `model_fact_max_chars` (48000.0), `model_fact_max_string_chars` (4000.0), `model_fact_max_depth` (5.0), `model_fact_max_items` (30.0)
+    * 上下文证据检索边界：`context_evidence_max_items` (20.0), `context_evidence_excerpt_chars` (700.0), `context_recent_message_limit` (6.0)
+    * 投递发件箱重试与沉寂阈值：`outbox_max_attempts` (3.0), `outbox_stale_sending_seconds` (300.0)
+    * 子代理工作资源配额：`child_max_active` (3.0), `child_max_timeout_seconds` (900.0), `child_max_token_budget` (50000.0), `child_max_call_budget` (12.0), `child_max_cost_budget` (2.0), `child_max_qps` (5.0)
+    * 标量奖赏空间与各失败域严重度：`reward_success` (1.0), `reward_degraded` (0.2), `severity_safeguard_policy` (1.0), `severity_loop_no_progress` (0.8), `severity_planner_or_parser` (0.7), `severity_checker_blocked` (0.6), `severity_capability_failure` (0.5), `severity_runtime` (0.4), `severity_provider_no_response` (0.3), `severity_default` (0.5)
+  * **双向信用归因引擎（Bidirectional Credit Assignment）**：
+    * 成功执行轨迹：对执行成功的工具节点回传正向奖赏（`node_type="tool"`, `reward=+1.0`），形成正向因果信用沉淀。
+    * 安全防线违规：对 `SAFEGUARD_POLICY` 拦截自动反传问责 `instructions` 与动态参数 `safeguards_entropy_threshold`。
+  * **自博弈全景参数探索（Self-Play Bound Coverage）**：
+    * `_PARAMETER_EXPLORATION_BOUNDS` 涵盖所有新增超参，赋能影子试验场（`ShadowSelfPlayArena`）全闭环自动参数演进与免人工晋升。
+
+```
++=============================================================================+
+|             NAVI NEURAL AGENTIC NETWORK: CLOSED-LOOP TOPOLOGY               |
++=============================================================================+
+|                                                                             |
+|      [ User Input / Trigger Event ]                                         |
+|                    |                                                        |
+|                    v                                                        |
+|   +------------------------------------+                                    |
+|   | 1. FORWARD PASS (PROMPT COMPILER)  |                                    |
+|   |    - 7 Dynamic Prompt Layers       |                                    |
+|   |    - Bounded Facts (chars/depth)   |<---------+                         |
+|   |    - Dynamic Context Recall Pool   |          |                         |
+|   +------------------------------------+          |                         |
+|                    |                              |                         |
+|                    v                              |                         |
+|   +------------------------------------+          |                         |
+|   | 2. ZERO-ELSE EXECUTION GRAPH       |          | [ Continuous Dynamic    |
+|   |    - Pure Algebraic Routing        |          |   Parameter Updates     |
+|   |    - Saga Lease Allocation         |          |   via SQLite Registry ] |
+|   |    - Tool & Sub-agent Dispatch     |          |                         |
+|   +------------------------------------+          |                         |
+|                    |                              |                         |
+|                    v                              |                         |
+|   +------------------------------------+          |                         |
+|   | 3. TRACE & TERMINAL EVALUATION     |          |                         |
+|   |    - Outcome (Success/Degraded/...) |          |                         |
+|   |    - Dynamic R_T Reward Mapping    |          |                         |
+|   +------------------------------------+          |                         |
+|                    |                              |                         |
+|                    v                              |                         |
+|   +------------------------------------+          |                         |
+|   | 4. BACKWARD CAUSAL ATTRIBUTION     |          |                         |
+|   |    - TD Discounting (gamma^k)      |          |                         |
+|   |    - Hebbian LTP / Forgetting      |          |                         |
+|   |    - Tool Credit / Blame           |          |                         |
+|   |    - Parameter Gradient Emitted    |----------+                         |
+|   +------------------------------------+                                    |
+|                    |                                                        |
+|                    v                                                        |
+|   +------------------------------------+                                    |
+|   | 5. SHADOW SELF-PLAY ARENA          |                                    |
+|   |    - Perturbation Sampling         |                                    |
+|   |    - Golden Benchmark Verification |                                    |
+|   |    - Auto-Promotion to Registry    |------------------------------------>
+|   +------------------------------------+                                    |
++=============================================================================+
+```
+
+
 
 

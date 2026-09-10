@@ -16,13 +16,14 @@ from dataclasses import dataclass, fields
 from typing import Any, Protocol
 
 from .db import check_schema_version, connect, write_schema_version
+from .dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from .paths import db_paths
 from .schema import Column, Table, assert_schema_exact
 
 
 DELIVERY_OUTBOX_SCHEMA_VERSION = 1
-DEFAULT_MAX_ATTEMPTS = 3
-STALE_SENDING_SECONDS = 300.0
+DEFAULT_MAX_ATTEMPTS = int(SYSTEM_DYNAMIC_PARAMETERS.get("outbox_max_attempts", 3.0))
+STALE_SENDING_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("outbox_stale_sending_seconds", 300.0))
 
 
 def _resolve_now(now: float | None = None) -> float:

@@ -381,3 +381,82 @@ def test_credit_assignment_loop_no_progress(tmp_path: Path) -> None:
     assert "loop_max_attempts_turn" in attr_targets
     assert attr_targets["loop_max_attempts_turn"].node_type == "dynamic_parameter"
 
+
+def test_compute_terminal_reward_dynamic_overrides(tmp_path: Path) -> None:
+    reg = DynamicParameterRegistry(tmp_path)
+    reg.set("reward_success", 1.5, reason="test")
+    reg.set("reward_degraded", 0.35, reason="test")
+    reg.set("severity_safeguard_policy", 0.95, reason="test")
+
+    assert compute_terminal_reward("success", "none", reg) == 1.5
+    assert compute_terminal_reward("degraded", "none", reg) == 0.35
+    assert compute_terminal_reward("failure", "safeguard_policy", reg) == -0.95
+
+
+def test_credit_assignment_safeguard_policy_attribution(tmp_path: Path) -> None:
+    engine = CreditAssignmentEngine(tmp_path)
+    ev = TraceEvent(
+        id="ev_safe",
+        trace_id="safe_trace",
+        session_id="s1",
+        run_id="r1",
+        phase=str(TracePhase.PLANNER_CALL_ERROR),
+        source="user",
+        peer_id="p1",
+        sender_id="u1",
+        tool="test_tool",
+        model_role="planner",
+        ok=False,
+        input_json="{}",
+        output_json="{}",
+        message="safeguard policy blocked execution",
+        created_at=time.time(),
+    )
+
+    attributions = engine.backprop_trace(
+        trace_id="safe_trace",
+        outcome=str(TraceOutcome.FAILURE),
+        failure_domain=str(TraceFailureDomain.SAFEGUARD_POLICY),
+        events=[ev],
+    )
+
+    attr_targets = {a.target_id: a for a in attributions}
+    assert "instructions" in attr_targets
+    assert attr_targets["instructions"].node_type == "prompt_layer"
+    assert "safeguards_entropy_threshold" in attr_targets
+    assert attr_targets["safeguards_entropy_threshold"].node_type == "dynamic_parameter"
+
+
+def test_credit_assignment_successful_tool_reinforcement(tmp_path: Path) -> None:
+    engine = CreditAssignmentEngine(tmp_path)
+    ev = TraceEvent(
+        id="ev_tool_ok",
+        trace_id="ok_trace",
+        session_id="s1",
+        run_id="r1",
+        phase=str(TracePhase.CAPABILITY_RESULT),
+        source="user",
+        peer_id="p1",
+        sender_id="u1",
+        tool="system.search",
+        model_role="executor",
+        ok=True,
+        input_json="{}",
+        output_json="{}",
+        message="executed successfully",
+        created_at=time.time(),
+    )
+
+    attributions = engine.backprop_trace(
+        trace_id="ok_trace",
+        outcome=str(TraceOutcome.SUCCESS),
+        failure_domain=str(TraceFailureDomain.NONE),
+        events=[ev],
+    )
+
+    attr_targets = {a.target_id: a for a in attributions}
+    assert "system.search" in attr_targets
+    assert attr_targets["system.search"].node_type == "tool"
+    assert attr_targets["system.search"].reward == 1.0
+
+

@@ -68,6 +68,44 @@ SYSTEM_DYNAMIC_PARAMETERS: dict[str, float] = {
     "max_parallel_tool_calls": 5.0,
     "evals_passing_score_threshold": 0.85,
 
+    # Daemon and retention windows
+    "daemon_poll_interval_seconds": 60.0,
+    "transient_retention_seconds": 86400.0,
+
+    # Prompt OS facts and context projection limits
+    "planner_fact_max_depth": 8.0,
+    "model_fact_max_chars": 48000.0,
+    "model_fact_max_string_chars": 4000.0,
+    "model_fact_max_depth": 5.0,
+    "model_fact_max_items": 30.0,
+    "context_evidence_max_items": 20.0,
+    "context_evidence_excerpt_chars": 700.0,
+    "context_recent_message_limit": 6.0,
+
+    # Delivery outbox parameters
+    "outbox_max_attempts": 3.0,
+    "outbox_stale_sending_seconds": 300.0,
+
+    # Child agent execution bounds
+    "child_max_active": 3.0,
+    "child_max_timeout_seconds": 900.0,
+    "child_max_token_budget": 50000.0,
+    "child_max_call_budget": 12.0,
+    "child_max_cost_budget": 2.0,
+    "child_max_qps": 5.0,
+
+    # Terminal reward landscape and domain failure severities
+    "reward_success": 1.0,
+    "reward_degraded": 0.2,
+    "severity_safeguard_policy": 1.0,
+    "severity_loop_no_progress": 0.8,
+    "severity_planner_or_parser": 0.7,
+    "severity_checker_blocked": 0.6,
+    "severity_capability_failure": 0.5,
+    "severity_runtime": 0.4,
+    "severity_provider_no_response": 0.3,
+    "severity_default": 0.5,
+
     # Self-play and prompt evolution parameters
     "prompt_mutation_temperature": 0.70,
     "prompt_evaluation_threshold": 0.80,

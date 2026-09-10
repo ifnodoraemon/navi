@@ -5,14 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from .safeguards import redact_secrets, redact_secrets_deep
 from .text_utils import truncate_middle
 
 
-DEFAULT_MODEL_FACT_CHARS = 48_000
-DEFAULT_MODEL_FACT_STRING_CHARS = 4_000
-DEFAULT_MODEL_FACT_DEPTH = 5
-DEFAULT_MODEL_FACT_ITEMS = 30
+DEFAULT_MODEL_FACT_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("model_fact_max_chars", 48_000.0))
+DEFAULT_MODEL_FACT_STRING_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("model_fact_max_string_chars", 4_000.0))
+DEFAULT_MODEL_FACT_DEPTH = int(SYSTEM_DYNAMIC_PARAMETERS.get("model_fact_max_depth", 5.0))
+DEFAULT_MODEL_FACT_ITEMS = int(SYSTEM_DYNAMIC_PARAMETERS.get("model_fact_max_items", 30.0))
 
 
 @dataclass

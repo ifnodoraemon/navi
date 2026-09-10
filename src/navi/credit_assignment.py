@@ -78,14 +78,25 @@ _FAILURE_DOMAIN_SEVERITY: dict[str, float] = {
 }
 
 
-def compute_terminal_reward(outcome: str, failure_domain: str) -> float:
+def compute_terminal_reward(
+    outcome: str,
+    failure_domain: str,
+    param_registry: DynamicParameterRegistry | None = None,
+) -> float:
     """Compute normalized scalar reward R in [-1.0, 1.0]."""
+    success_reward = 1.0
+    degraded_reward = 0.2
+    default_severity = _FAILURE_DOMAIN_SEVERITY.get(failure_domain, 0.5)
+    if param_registry is not None:
+        success_reward = param_registry.get("reward_success", 1.0)
+        degraded_reward = param_registry.get("reward_degraded", 0.2)
+        severity_key = f"severity_{failure_domain}"
+        default_severity = param_registry.get(severity_key, default_severity)
     if outcome == str(TraceOutcome.SUCCESS):
-        return 1.0
+        return success_reward
     if outcome == str(TraceOutcome.DEGRADED):
-        return 0.2
-    severity = _FAILURE_DOMAIN_SEVERITY.get(failure_domain, 0.5)
-    return -1.0 * severity
+        return degraded_reward
+    return -1.0 * default_severity
 
 
 class CreditAssignmentEngine:
@@ -224,7 +235,7 @@ class CreditAssignmentEngine:
         """Execute backward attribution pass on the trace execution graph."""
         if not events:
             return []
-        reward = compute_terminal_reward(outcome, failure_domain)
+        reward = compute_terminal_reward(outcome, failure_domain, param_registry=self.param_registry)
         attributions: list[CausalCreditAttribution] = []
 
         # 1. Extract used memory items across planner syscall events with temporal discounting
@@ -384,5 +395,58 @@ class CreditAssignmentEngine:
                     now=now,
                 )
             )
+
+        # 7. Backprop on Safeguard Policy violations
+        if failure_domain == str(TraceFailureDomain.SAFEGUARD_POLICY):
+            attributions.append(
+                self.record_attribution(
+                    trace_id=trace_id,
+                    node_type="prompt_layer",
+                    target_id="instructions",
+                    outcome=outcome,
+                    failure_domain=failure_domain,
+                    reward=reward,
+                    delta_applied=reward,
+                    reason="blame_registered_for_safeguard_violation",
+                    now=now,
+                )
+            )
+            attributions.append(
+                self.record_attribution(
+                    trace_id=trace_id,
+                    node_type="dynamic_parameter",
+                    target_id="safeguards_entropy_threshold",
+                    outcome=outcome,
+                    failure_domain=failure_domain,
+                    reward=reward,
+                    delta_applied=reward,
+                    reason="safeguards_entropy_threshold_scrutiny",
+                    now=now,
+                )
+            )
+
+        # 8. Forward credit reinforcement on successful traces
+        if outcome == str(TraceOutcome.SUCCESS):
+            successful_tools = {
+                str(getattr(e, "tool", "") or "").strip()
+                for e in events
+                if bool(getattr(e, "ok", True))
+                and getattr(e, "phase", "") in {str(TracePhase.CAPABILITY_RESULT), "capability.result"}
+                and str(getattr(e, "tool", "") or "").strip()
+            }
+            for tool_name in sorted(successful_tools):
+                attributions.append(
+                    self.record_attribution(
+                        trace_id=trace_id,
+                        node_type="tool",
+                        target_id=tool_name,
+                        outcome=outcome,
+                        failure_domain=failure_domain,
+                        reward=reward,
+                        delta_applied=reward,
+                        reason=f"positive_credit_attributed_for_tool:{tool_name}",
+                        now=now,
+                    )
+                )
 
         return attributions

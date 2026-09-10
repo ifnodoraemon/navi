@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import connect
+from .dynamic_parameters import DynamicParameterRegistry, SYSTEM_DYNAMIC_PARAMETERS
 from .paths import db_paths
 
 
@@ -101,6 +102,13 @@ class DataRetentionManager:
                 """
             ).fetchall()
         candidates: list[dict[str, Any]] = []
+        fallback_retention = SYSTEM_DYNAMIC_PARAMETERS.get("transient_retention_seconds", 86400.0)
+        try:
+            fallback_retention = DynamicParameterRegistry(self.home).get(
+                "transient_retention_seconds", fallback_retention
+            )
+        except Exception:
+            pass
         for run_id, goal_id, spec_id, terminal_state, updated_at, spec_json in rows:
             try:
                 spec = json.loads(str(spec_json))
@@ -118,9 +126,9 @@ class DataRetentionManager:
             if not isinstance(profile, dict) or profile.get("persistence") != "transient_audit":
                 continue
             try:
-                retention_seconds = max(0.0, float(profile.get("retention_seconds", 86400)))
+                retention_seconds = max(0.0, float(profile.get("retention_seconds", fallback_retention)))
             except (TypeError, ValueError):
-                retention_seconds = 86400.0
+                retention_seconds = fallback_retention
             if float(updated_at) + retention_seconds > now:
                 continue
             candidates.append(

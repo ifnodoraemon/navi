@@ -6,15 +6,16 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ..dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from ..memory import MemoryRecall, MemoryStore, StoredMessage
 from ..text_utils import truncate_middle
 from ..tools import ToolResult
 from .memory import _memory_conflict_facts, _memory_item_facts
 from .utils import _positive_int
 
-CONTEXT_EVIDENCE_MAX_ITEMS = 20
-CONTEXT_EVIDENCE_EXCERPT_CHARS = 700
-CONTEXT_RECENT_MESSAGE_LIMIT = 6
+CONTEXT_EVIDENCE_MAX_ITEMS = int(SYSTEM_DYNAMIC_PARAMETERS.get("context_evidence_max_items", 20.0))
+CONTEXT_EVIDENCE_EXCERPT_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("context_evidence_excerpt_chars", 700.0))
+CONTEXT_RECENT_MESSAGE_LIMIT = int(SYSTEM_DYNAMIC_PARAMETERS.get("context_recent_message_limit", 6.0))
 
 
 def _context_search(home: Path, args: dict[str, Any]) -> ToolResult:

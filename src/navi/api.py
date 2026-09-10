@@ -25,6 +25,7 @@ from .control_plane import TurnController
 from .daemon import SystemDaemon
 from .defaults import DEFAULT_LOCAL_SURFACE
 from .diagnostics import run_diagnostics
+from .dynamic_parameters import DynamicParameterRegistry, SYSTEM_DYNAMIC_PARAMETERS
 from .evolution import EvolutionLedger, list_evolution_targets
 from .goals import GoalStore
 from .graph import GraphStore
@@ -159,7 +160,14 @@ def _build_lifespan(
                 import logging
 
                 logging.getLogger(__name__).exception("Background processing failed")
-            await asyncio.sleep(60)
+            sleep_duration = SYSTEM_DYNAMIC_PARAMETERS.get("daemon_poll_interval_seconds", 60.0)
+            try:
+                sleep_duration = DynamicParameterRegistry(home).get(
+                    "daemon_poll_interval_seconds", sleep_duration
+                )
+            except Exception:
+                pass
+            await asyncio.sleep(sleep_duration)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
