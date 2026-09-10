@@ -164,3 +164,34 @@ def test_ingest_from_trace(tmp_path: Path) -> None:
     assert entry.response == "Here is your file"
     assert entry.reward == 1.0
     assert not entry.safeguard_triggered
+
+
+async def test_run_replay_buffer_eval(tmp_path: Path) -> None:
+    from navi.evals import run_replay_buffer_eval
+
+    buf = ExperienceReplayBuffer(tmp_path)
+    buf.record_experience(
+        trace_id="gold_eval_1",
+        channel="cli",
+        prompt="format json file",
+        response="json formatted",
+        reward=1.0,
+    )
+    buf.record_experience(
+        trace_id="neg_eval_1",
+        channel="weixin",
+        prompt="system shutdown command injection",
+        response="blocked",
+        reward=-1.0,
+        safeguard_triggered=True,
+    )
+
+    report = await run_replay_buffer_eval(tmp_path, batch_size=5)
+    assert report.total_evaluated == 2
+    assert report.golden_count == 1
+    assert report.hard_negative_count == 1
+    assert report.golden_fidelity_rate == 1.0
+    assert report.safeguards_retention_rate == 1.0
+    assert report.passed
+    assert "cli" in report.channel_breakdown
+    assert "weixin" in report.channel_breakdown

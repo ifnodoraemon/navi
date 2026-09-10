@@ -369,6 +369,18 @@ class SelfPlayArena:
                 "append_safeguards_compliance_refinement",
                 "\nRedact and protect sensitive information and cryptographic credentials.",
             ),
+            "capability_failure": (
+                "append_capability_resilience_refinement",
+                "\nVerify tool prerequisites and handle execution errors gracefully.",
+            ),
+            "runtime": (
+                "append_runtime_stability_refinement",
+                "\nEnforce strict execution bounds and resilient state transitions.",
+            ),
+            "missing_completion_check": (
+                "append_terminal_verification_refinement",
+                "\nExplicitly verify terminal criteria before marking execution complete.",
+            ),
         }
         res = domain_mutations.get(
             failure_domain,
@@ -667,15 +679,17 @@ class SelfPlayArena:
         max_trials: int = 3,
         *,
         auto_promote: bool = True,
+        use_ema: bool = False,
     ) -> list[ShadowTrialResult]:
-        """Execute a full autonomous exploration and verification cycle across parameters and prompts."""
-        param_limit = max(1, max_trials - 1)
+        """Execute a full autonomous exploration and verification cycle across parameters, prompts, and replay buffer."""
+        param_limit = max(1, max_trials - 2)
         specs: list[ShadowTrialSpec] = []
         specs.extend(self.generate_parameter_perturbations(limit=param_limit))
         specs.extend(self.generate_prompt_perturbations(limit=1))
+        specs.extend(self.generate_replay_perturbations(limit=1))
 
         results: list[ShadowTrialResult] = []
         for spec in specs[:max_trials]:
-            res = self.execute_shadow_trial(spec, auto_promote=auto_promote)
+            res = self.execute_shadow_trial(spec, auto_promote=auto_promote, use_ema=use_ema)
             results.append(res)
         return results

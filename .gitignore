@@ -18,3 +18,4 @@ api.log
 run.log
 latest_trace.json
 traces.db
+coverage.json

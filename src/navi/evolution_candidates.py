@@ -100,16 +100,16 @@ class EvolutionCandidateScanner:
                 sample_trace_ids = tuple(
                     str(row[0]) for row in reversed(sample_rows)
                 )
-            digest = hashlib.sha256(f"{failure_domain}\0{rule}".encode()).hexdigest()[:12]
-            candidates.append(
-                EvolutionCandidate(
-                    id=f"trace-cluster-{digest}",
-                    failure_domain=str(failure_domain),
-                    evaluation_rule=str(rule),
-                    occurrences=int(occurrences),
-                    first_seen_at=float(first_seen),
-                    last_seen_at=float(last_seen),
-                    sample_trace_ids=sample_trace_ids,
+                digest = hashlib.sha256(f"{failure_domain}\0{rule}".encode()).hexdigest()[:12]
+                candidates.append(
+                    EvolutionCandidate(
+                        id=f"trace-cluster-{digest}",
+                        failure_domain=str(failure_domain),
+                        evaluation_rule=str(rule),
+                        occurrences=int(occurrences),
+                        first_seen_at=float(first_seen),
+                        last_seen_at=float(last_seen),
+                        sample_trace_ids=sample_trace_ids,
+                    )
                 )
-            )
         return candidates

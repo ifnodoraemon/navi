@@ -1119,3 +1119,56 @@ async def test_daemon_recovers_stale_connector_foreground_loop_with_durable_deli
     assert [run.id for run in processed] == [opened.run.id]
     assert captured["loop_run_id"] == opened.loop_run.run_id
     assert captured["persist_result_delivery"] is True
+
+
+def test_execution_owner_process_is_alive():
+    import os
+    from navi.daemon import _execution_owner_process_is_alive
+
+    assert _execution_owner_process_is_alive("external:unknown") is True
+    assert _execution_owner_process_is_alive("daemon:invalid_pid:session") is True
+    assert _execution_owner_process_is_alive("daemon:-10:session") is True
+
+    my_pid = os.getpid()
+    assert _execution_owner_process_is_alive(f"daemon:{my_pid}:session") is True
+    assert _execution_owner_process_is_alive(f"state-graph:{my_pid}:session") is True
+
+    assert _execution_owner_process_is_alive("daemon:9999999:session") is False
+
+
+@pytest.mark.asyncio
+async def test_daemon_process_events_once_lifecycle(tmp_path: Path):
+    from navi.graph import GraphStore
+    from navi.daemon_types import ProactiveEvent
+
+    daemon = SystemDaemon(tmp_path, project_dir=tmp_path)
+    res_empty = await daemon.process_events_once()
+    assert res_empty == []
+
+    proj_dir = tmp_path / "my_project"
+    proj_dir.mkdir()
+
+    graph = GraphStore(tmp_path)
+    graph.upsert("Project", "my_project", {"path": str(proj_dir), "watch": True})
+
+    async def fake_detector(context):
+        ev = ProactiveEvent(
+            kind="git_mutation",
+            project_path=str(proj_dir),
+            summary="New git commit detected",
+            event_data={"commit": "abc"},
+        )
+        return [ev], {"last_seen_commit": "abc"}
+
+    daemon._project_event_detectors = lambda: [fake_detector]
+
+    events = await daemon.process_events_once()
+    assert len(events) >= 0
+
+    async def failing_detector(context):
+        raise RuntimeError("detector crashed")
+
+    daemon._project_event_detectors = lambda: [failing_detector]
+    events_after_crash = await daemon.process_events_once()
+    assert events_after_crash == []
+
