@@ -46,17 +46,20 @@ class EvolutionTargetAdapter(Protocol):
 
 class EvolutionTargetAdapterRegistry:
     def __init__(self, home: Path):
+        param_adapter = _MemoryParameterAdapter(home)
         adapters: tuple[EvolutionTargetAdapter, ...] = (
             _PromptLayerAdapter(home),
             _SkillAdapter(home),
             _MemoryItemAdapter(home),
-            _MemoryParameterAdapter(home),
+            param_adapter,
             _EvalCaseAdapter(home),
             _GraphNodeAdapter(home),
         )
         self._adapters = {
             adapter.descriptor.target_type: adapter for adapter in adapters
         }
+        self._adapters["dynamic_parameter"] = param_adapter
+        self._adapters["system_parameter"] = param_adapter
 
     def get(self, target_type: str) -> EvolutionTargetAdapter:
         try:

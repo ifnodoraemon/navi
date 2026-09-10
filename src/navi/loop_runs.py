@@ -12,11 +12,14 @@ from typing import Any
 from .db import check_schema_version, connect, write_schema_version
 from .loop_contracts import LoopNode, LoopRunState, LoopSpec, LoopTerminalState
 from .paths import db_paths
+from .dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from .schema import Column, Table, assert_schema_exact
 
 
 LOOP_RUN_STORE_SCHEMA_VERSION = 3
-DETACHED_EXECUTION_RECOVERY_GRACE_SECONDS = 90.0
+DETACHED_EXECUTION_RECOVERY_GRACE_SECONDS = SYSTEM_DYNAMIC_PARAMETERS.get(
+    "detached_recovery_grace_seconds", 90.0
+)
 
 
 def _resolve_now(now: float | None) -> float:

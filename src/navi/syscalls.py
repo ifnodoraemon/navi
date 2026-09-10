@@ -20,10 +20,13 @@ from .prompt_os import (
     assemble_planner_tool_manifest,
     assemble_planner_turn_input,
 )
+from .dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 from .text_utils import truncate_middle
 from .tools import ToolSpec
 
-PROVIDER_TRANSPORT_RETRY_AFTER_SECONDS = 15.0
+PROVIDER_TRANSPORT_RETRY_AFTER_SECONDS = SYSTEM_DYNAMIC_PARAMETERS.get(
+    "provider_retry_after_seconds", 15.0
+)
 PROVIDER_ERROR_MAX_CHARS = 1_000
 
 

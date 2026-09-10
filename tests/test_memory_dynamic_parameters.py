@@ -124,3 +124,43 @@ def test_evolution_target_memory_parameter(tmp_path: Path) -> None:
     restored_json = adapter.read("cue_weight_jaccard")
     restored_data = json.loads(restored_json)
     assert restored_data["value"] == 0.25
+
+
+def test_dynamic_parameter_registry_standalone(tmp_path: Path) -> None:
+    from navi.dynamic_parameters import DynamicParameterRegistry, SYSTEM_DYNAMIC_PARAMETERS
+
+    registry = DynamicParameterRegistry(tmp_path)
+    # Default lookup
+    assert registry.get("cue_weight_coverage") == 0.60
+    assert registry.get("provider_retry_after_seconds") == 15.0
+    assert registry.get("nonexistent_param", 42.0) == 42.0
+
+    # Set and cache
+    registry.set("provider_retry_after_seconds", 30.0, reason="network_congestion")
+    assert registry.get("provider_retry_after_seconds") == 30.0
+
+    # Persists across instances
+    reloaded = DynamicParameterRegistry(tmp_path)
+    assert reloaded.get("provider_retry_after_seconds") == 30.0
+
+    # List all
+    all_params = registry.list_all()
+    assert "cue_weight_coverage" in all_params
+    assert all_params["provider_retry_after_seconds"]["value"] == 30.0
+    assert all_params["provider_retry_after_seconds"]["metadata"]["reason"] == "network_congestion"
+
+
+def test_evolution_target_dynamic_and_system_parameter(tmp_path: Path) -> None:
+    registry = EvolutionTargetAdapterRegistry(tmp_path)
+    for target_type in ("dynamic_parameter", "system_parameter"):
+        adapter = registry.get(target_type)
+        assert adapter is not None
+        assert adapter.descriptor.target_type == "memory_parameter"
+
+        before = adapter.read("provider_retry_after_seconds")
+        candidate = json.dumps({"value": 25.0, "reason": "evo_tune"})
+        adapter.apply("provider_retry_after_seconds", candidate)
+        after = json.loads(adapter.read("provider_retry_after_seconds"))
+        assert after["value"] == 25.0
+        adapter.rollback("provider_retry_after_seconds", before)
+

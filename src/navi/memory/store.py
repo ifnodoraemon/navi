@@ -117,32 +117,9 @@ def _raise(exc: Exception) -> Any:
     raise exc
 
 
-DEFAULT_MEMORY_PARAMETERS: dict[str, float] = {
-    "cue_weight_coverage": 0.60,
-    "cue_weight_jaccard": 0.25,
-    "cue_weight_sequence": 0.15,
-    "tf_reinforcement_rate": 0.15,
-    "tf_max_extra_boost": 3.0,
-    "ltp_boost_delta": 0.05,
-    "decay_base_delta": 0.05,
-    "decay_stale_threshold": 0.20,
-    "decay_grace_seconds": 90.0 * 24 * 60 * 60,
-    "decay_stability_scale": 1.0,
-    "graph_fanout_damping": 3.0,
-    "hebbian_learning_rate": 0.05,
-    "confidence_reduction_delta": 0.10,
-    "consolidation_default_confidence": 0.70,
-    "consolidation_history_retention_seconds": 90.0 * 24 * 60 * 60,
-    "graph_hub_degree_cutoff_multiplier": 3.0,
-    "recall_fts_pool_multiplier": 3.0,
-    "recall_lexical_pool_multiplier": 20.0,
-    "recall_candidate_pool_min": 200.0,
-    "consolidation_lease_seconds": 300.0,
-    "context_recent_base_no_query": 950.0,
-    "context_recent_base_query": 620.0,
-    "context_message_rank_base_score": 900.0,
-    "context_memory_recall_base_score": 800.0,
-}
+from ..dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
+
+DEFAULT_MEMORY_PARAMETERS: dict[str, float] = SYSTEM_DYNAMIC_PARAMETERS
 
 
 class MemoryStore:

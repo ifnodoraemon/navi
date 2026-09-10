@@ -8,13 +8,18 @@ from pathlib import Path
 import httpx
 
 from navi.delivery_outbox import DeliveryFailure, DeliveryItem, DeliveryReceipt
+from navi.dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
 
 from .client import WeixinClient, WeixinTransportError
 from .models import WeixinAccount
 from .store import WeixinSessionStore
 
-WEIXIN_RATE_LIMIT_RETRY_SECONDS = 900.0
-WEIXIN_TRANSIENT_REJECTION_RETRY_SECONDS = 60.0
+WEIXIN_RATE_LIMIT_RETRY_SECONDS = SYSTEM_DYNAMIC_PARAMETERS.get(
+    "weixin_rate_limit_retry_seconds", 900.0
+)
+WEIXIN_TRANSIENT_REJECTION_RETRY_SECONDS = SYSTEM_DYNAMIC_PARAMETERS.get(
+    "weixin_transient_rejection_retry_seconds", 60.0
+)
 
 
 class WeixinDeliveryTransport:
