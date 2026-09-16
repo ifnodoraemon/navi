@@ -8,6 +8,7 @@ Enables test-time compute and self-play for the Agentic Neural Network:
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 from pathlib import Path
 import time
@@ -39,6 +40,31 @@ SELF_PLAY_TRIALS_TABLE = Table(
         Column("created_at", "REAL", nullable=False),
     ],
 )
+
+SELF_PLAY_STATE_TABLE = Table(
+    "self_play_cycle_state",
+    [
+        Column("key", "TEXT", primary_key=True),
+        Column("value", "REAL", nullable=False),
+    ],
+)
+
+# Structural runtime stubs (nonempty/json_valid/parameter_valid) prove only
+# that a candidate parses. Promotion to live state requires at least one
+# behavioral eval case that is not a "runtime.*" stub.
+_RUNTIME_STUB_PREFIX = "runtime."
+
+
+def _is_behavioral_eval_case(case_id: str) -> bool:
+    return not case_id.startswith(_RUNTIME_STUB_PREFIX)
+
+
+def _candidate_digest(content: str) -> dict[str, Any]:
+    return {
+        "length": len(content),
+        "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "head": content[:200],
+    }
 
 
 @dataclass(frozen=True)
@@ -221,6 +247,40 @@ class SelfPlayArena:
                 "CREATE INDEX IF NOT EXISTS idx_self_play_target "
                 "ON self_play_trials(target_type, target_id)"
             )
+            conn.execute(SELF_PLAY_STATE_TABLE.ddl)
+
+    def last_cycle_at(self) -> float:
+        """Return the timestamp of the last background self-play cycle (0.0 if never)."""
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT value FROM self_play_cycle_state WHERE key = 'last_cycle_at'"
+            ).fetchone()
+        if row:
+            return float(row[0])
+        return 0.0
+
+    def claim_cycle_if_due(self, min_interval_seconds: float, now: float | None = None) -> bool:
+        """Atomically claim one background self-play cycle slot.
+
+        Cross-process safe: the guarded UPDATE only fires when at least
+        `min_interval_seconds` elapsed since the last recorded cycle, so
+        concurrent daemons cannot each run their own cadence.
+        """
+        resolved_now = time.time()
+        if now is not None:
+            resolved_now = float(now)
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO self_play_cycle_state(key, value) "
+                "VALUES ('last_cycle_at', 0.0)"
+            )
+            cursor = conn.execute(
+                "UPDATE self_play_cycle_state SET value = ? "
+                "WHERE key = 'last_cycle_at' AND (? - value) >= ?",
+                (resolved_now, resolved_now, float(min_interval_seconds)),
+            )
+            claimed = cursor.rowcount == 1
+        return claimed
 
     def generate_parameter_perturbations(self, limit: int = 5) -> list[ShadowTrialSpec]:
         """Generate targeted parameter perturbations informed by credit attributions."""
@@ -462,6 +522,12 @@ class SelfPlayArena:
                 reasons,
                 provider=provider,
             )
+            refinement_text = refinement.strip()
+            if refinement_text and refinement_text in current_content:
+                # The refinement is already part of the live layer; appending it
+                # again would duplicate the directive and grow the layer
+                # without bound, so skip this layer.
+                continue
             candidate_text = current_content.strip() + refinement + "\n"
             specs.append(
                 ShadowTrialSpec(
@@ -524,6 +590,12 @@ class SelfPlayArena:
                 reasons,
                 provider=provider,
             )
+            refinement_text = refinement.strip()
+            if refinement_text and refinement_text in current_content:
+                # The refinement is already part of the live layer; appending it
+                # again would duplicate the directive and grow the layer
+                # without bound, so skip this layer.
+                continue
             candidate_text = current_content.strip() + refinement + "\n"
             specs.append(
                 ShadowTrialSpec(
@@ -555,25 +627,35 @@ class SelfPlayArena:
         if channels is not None and len(channels) == 1:
             target_channel = channels[0]
         hard_negatives = replay_buffer.get_hard_negatives(limit=limit, channel=target_channel)
+        prompt_store = PromptLayerStore(self.home)
         specs: list[ShadowTrialSpec] = []
         for entry in hard_negatives:
             if len(specs) >= limit:
                 break
             f_domain = str(entry.metadata.get("failure_domain", "safeguard_policy"))
+            # The replay entry is untrusted conversation history: it supplies
+            # failure context only. The candidate must be derived from the
+            # current live instructions layer, never from entry.prompt, or a
+            # promoted trial would replace system instructions with an old
+            # user message.
+            current_content = prompt_store.read("instructions")
             hypothesis, refinement = self.meta_prompt_mutate(
                 "instructions",
-                entry.prompt,
+                current_content,
                 f_domain,
                 [f"replay_trace:{entry.trace_id}", f"reward:{entry.reward}"],
                 provider=provider,
             )
-            candidate_text = entry.prompt.strip() + "\n" + refinement.strip() + "\n"
+            refinement_text = refinement.strip()
+            if refinement_text and refinement_text in current_content:
+                continue
+            candidate_text = current_content.strip() + "\n" + refinement_text + "\n"
             specs.append(
                 ShadowTrialSpec(
                     trial_id=uuid.uuid4().hex,
                     target_type="prompt_layer",
                     target_id="instructions",
-                    baseline_value=float(len(entry.prompt)),
+                    baseline_value=float(len(current_content)),
                     candidate_value=float(len(candidate_text)),
                     hypothesis=f"replay_adversarial_defense:{entry.trace_id[:8]}",
                     eval_case_ids=("runtime.text.nonempty",),
@@ -597,25 +679,35 @@ class SelfPlayArena:
         if channels is not None and len(channels) == 1:
             target_channel = channels[0]
         hard_negatives = replay_buffer.get_hard_negatives(limit=limit, channel=target_channel)
+        prompt_store = PromptLayerStore(self.home)
         specs: list[ShadowTrialSpec] = []
         for entry in hard_negatives:
             if len(specs) >= limit:
                 break
             f_domain = str(entry.metadata.get("failure_domain", "safeguard_policy"))
+            # The replay entry is untrusted conversation history: it supplies
+            # failure context only. The candidate must be derived from the
+            # current live instructions layer, never from entry.prompt, or a
+            # promoted trial would replace system instructions with an old
+            # user message.
+            current_content = prompt_store.read("instructions")
             hypothesis, refinement = await self.meta_prompt_mutate_async(
                 "instructions",
-                entry.prompt,
+                current_content,
                 f_domain,
                 [f"replay_trace:{entry.trace_id}", f"reward:{entry.reward}"],
                 provider=provider,
             )
-            candidate_text = entry.prompt.strip() + "\n" + refinement.strip() + "\n"
+            refinement_text = refinement.strip()
+            if refinement_text and refinement_text in current_content:
+                continue
+            candidate_text = current_content.strip() + "\n" + refinement_text + "\n"
             specs.append(
                 ShadowTrialSpec(
                     trial_id=uuid.uuid4().hex,
                     target_type="prompt_layer",
                     target_id="instructions",
-                    baseline_value=float(len(entry.prompt)),
+                    baseline_value=float(len(current_content)),
                     candidate_value=float(len(candidate_text)),
                     hypothesis=hypothesis,
                     eval_case_ids=("runtime.text.nonempty",),
@@ -649,6 +741,9 @@ class SelfPlayArena:
             candidate_payload = spec.candidate_content
 
         all_checks: list[dict[str, Any]] = []
+        behavioral_case_ids = [
+            case_id for case_id in spec.eval_case_ids if _is_behavioral_eval_case(case_id)
+        ]
         for case_id in spec.eval_case_ids:
             checks = self.experiment_store._evaluate_case(
                 case_id=case_id,
@@ -658,12 +753,40 @@ class SelfPlayArena:
             all_checks.extend(checks)
 
         passed = bool(all_checks) and all(bool(c.get("passed")) for c in all_checks)
+        # Honest scoring: only behavioral (non-runtime-stub) eval cases carry a
+        # measured signal. Structural stubs alone score zero.
+        behavioral_checks = [
+            check
+            for check in all_checks
+            if _is_behavioral_eval_case(str(check.get("case_id") or ""))
+        ]
         score_delta = 0.0
-        if passed:
+        if passed and behavioral_checks:
             passing_thresh = self.param_registry.get("evals_passing_score_threshold", 0.85)
-            score_delta = round(passing_thresh * 0.1, 4)
+            behavioral_passed = sum(1 for check in behavioral_checks if check.get("passed"))
+            score_delta = round(passing_thresh * (behavioral_passed / len(behavioral_checks)), 4)
 
-        promoted = passed and auto_promote
+        promotion_block_reason = ""
+        if passed and auto_promote and not behavioral_case_ids:
+            # Structural stubs ("runtime.*") prove only that the candidate
+            # parses; they must never gate live-state mutation on their own.
+            promotion_block_reason = "structural_stub_verification_only"
+
+        if (
+            passed
+            and auto_promote
+            and not promotion_block_reason
+            and spec.target_type == "prompt_layer"
+        ):
+            prompt_store = PromptLayerStore(self.home)
+            current_content = prompt_store.read(spec.target_id)
+            if spec.candidate_content == current_content:
+                promotion_block_reason = "candidate_identical_to_current"
+            growth_cap = max(int(len(current_content) * 1.25), len(current_content) + 4096)
+            if not promotion_block_reason and len(spec.candidate_content) > growth_cap:
+                promotion_block_reason = "candidate_exceeds_growth_cap"
+
+        promoted = passed and auto_promote and not promotion_block_reason
         if promoted:
             if spec.target_type == "dynamic_parameter":
                 if use_ema:
@@ -701,8 +824,10 @@ class SelfPlayArena:
             "hypothesis": spec.hypothesis,
             "target_type": spec.target_type,
             "target_id": spec.target_id,
-            "candidate_content": spec.candidate_content,
+            "candidate_digest": _candidate_digest(spec.candidate_content or candidate_payload),
         }
+        if promotion_block_reason:
+            evidence["promotion_blocked_reason"] = promotion_block_reason
 
         result = ShadowTrialResult(
             trial_id=spec.trial_id,
@@ -748,9 +873,10 @@ class SelfPlayArena:
             trial_reward = 1.0
             if not passed:
                 trial_reward = -0.5
-            resp = str(spec.candidate_value)
-            if spec.candidate_content:
-                resp = spec.candidate_content
+            # Record a digest summary, not the full candidate content: replay
+            # entries with embedded prompt-layer payloads grew the evolution
+            # database by tens of gigabytes.
+            resp = f"shadow_trial:{spec.trial_id[:8]}:{spec.target_type}:{spec.target_id}"
             replay_buf = ExperienceReplayBuffer(self.home)
             replay_buf.record_experience(
                 trace_id=f"self_play_{spec.trial_id[:8]}",
@@ -763,6 +889,9 @@ class SelfPlayArena:
                     "target_id": spec.target_id,
                     "passed": passed,
                     "promoted": promoted,
+                    "candidate_digest": _candidate_digest(
+                        spec.candidate_content or str(spec.candidate_value)
+                    ),
                 },
                 now=current_time,
             )

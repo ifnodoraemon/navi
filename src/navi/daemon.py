@@ -542,33 +542,17 @@ class SystemDaemon:
     async def _add_observability_maintenance(self, facts: dict[str, Any]) -> dict[str, Any]:
         from .evolution_engine import EvolutionEngine
         from .metrics import MetricsProjector
-        from .self_play import SelfPlayArena
 
         facts["evolution_rollbacks"] = await asyncio.to_thread(
             EvolutionEngine(self.home).reconcile_regressed_activations
         )
-        provider = None
+
         try:
             from .config import load_config
-            from .provider import build_provider
 
-            config = load_config(self.home)
-            provider = build_provider(config.model)
-        except Exception:
-            provider = None
-
-        try:
-            arena = SelfPlayArena(self.home)
-            self_play_results = await arena.run_autonomous_cycle_async(
-                2,
-                auto_promote=True,
-                use_ema=True,
-                provider=provider,
+            facts["self_play"] = await self._background_self_play_facts(
+                load_config(self.home).evolution
             )
-            facts["self_play"] = {
-                "trials_run": len(self_play_results),
-                "promoted": [r.target_id for r in self_play_results if r.promoted],
-            }
         except Exception as exc:
             logger.warning("Background self-play cycle encountered error: %s", exc)
             facts["self_play"] = {"trials_run": 0, "promoted": [], "error": str(exc)}
@@ -592,6 +576,35 @@ class SystemDaemon:
             "breached": [item.name for item in snapshot.slos if item.status == "breached"],
         }
         return facts
+
+    async def _background_self_play_facts(self, evolution_cfg: Any) -> dict[str, Any]:
+        """Run one gated background self-play cycle and summarize it as facts."""
+        from .self_play import SelfPlayArena
+
+        if not evolution_cfg.self_play_enabled:
+            return {"trials_run": 0, "promoted": [], "disabled": True}
+        arena = SelfPlayArena(self.home)
+        if not arena.claim_cycle_if_due(evolution_cfg.self_play_min_interval_seconds):
+            return {"trials_run": 0, "promoted": [], "throttled": True}
+        provider = None
+        try:
+            from .config import load_config
+            from .provider import build_provider
+
+            config = load_config(self.home)
+            provider = build_provider(config.model)
+        except Exception:
+            provider = None
+        results = await arena.run_autonomous_cycle_async(
+            2,
+            auto_promote=True,
+            use_ema=True,
+            provider=provider,
+        )
+        return {
+            "trials_run": len(results),
+            "promoted": [r.target_id for r in results if r.promoted],
+        }
 
     def _process_memory_maintenance(self) -> dict[str, Any]:
         from .memory import MemoryStore

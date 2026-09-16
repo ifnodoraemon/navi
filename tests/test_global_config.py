@@ -34,12 +34,17 @@ def test_default_config_contains_every_global_section_and_is_private(tmp_path: P
         "search",
         "connectors",
         "mcp",
+        "evolution",
     ]
     assert raw["api"]["api_key"]
     assert raw["mcp"]["servers"]["exa"]["url"] == "https://mcp.exa.ai/mcp"
     assert raw["search"]["providers"]["exa"]["kind"] == "exa_mcp"
     assert raw["search"]["providers"]["searxng"]["enabled"] is False
     assert raw["search"]["providers"]["searxng"]["allow_private_network"] is False
+    assert raw["evolution"] == {
+        "self_play_enabled": False,
+        "self_play_min_interval_seconds": 3600.0,
+    }
     assert raw["search"]["providers"]["x"] == {
         "kind": "x_api",
         "enabled": False,

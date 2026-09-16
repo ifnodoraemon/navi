@@ -24,7 +24,22 @@ def test_generate_parameter_perturbations(tmp_path: Path) -> None:
         assert "exploratory" in spec.hypothesis
 
 
-def test_execute_shadow_trial_success_and_promotion(tmp_path: Path) -> None:
+def _write_behavioral_case(home: Path, case_id: str = "test_behavioral_case") -> str:
+    case_path = home / "evals" / f"{case_id}.json"
+    case_path.parent.mkdir(parents=True, exist_ok=True)
+    case_path.write_text(
+        json.dumps(
+            {
+                "id": case_id,
+                "target_types": ["dynamic_parameter", "prompt_layer"],
+                "assertions": [{"type": "nonempty"}],
+            }
+        )
+    )
+    return case_id
+
+
+def test_execute_shadow_trial_stub_verification_blocks_promotion(tmp_path: Path) -> None:
     arena = SelfPlayArena(tmp_path)
     param_reg = DynamicParameterRegistry(tmp_path)
     initial_cov = param_reg.get("cue_weight_coverage")
@@ -41,19 +56,49 @@ def test_execute_shadow_trial_success_and_promotion(tmp_path: Path) -> None:
 
     result = arena.execute_shadow_trial(spec, auto_promote=True)
     assert result.passed
-    assert result.promoted
-    assert result.score_delta > 0.0
-    assert result.candidate_value == 0.65
+    # Runtime stubs ("runtime.parameter.valid") prove only that the value
+    # parses; they must not gate live-state mutation on their own.
+    assert not result.promoted
+    assert result.score_delta == 0.0
+    assert (
+        result.evidence["promotion_blocked_reason"]
+        == "structural_stub_verification_only"
+    )
 
-    # Verify parameter updated in registry
-    updated_cov = param_reg.get("cue_weight_coverage", reload=True)
-    assert updated_cov == 0.65
+    # Registry unchanged
+    assert param_reg.get("cue_weight_coverage", reload=True) == initial_cov
 
-    # Verify trial record persisted
+    # Trial record persisted with the block reason
     trials = arena.list_trials(target_id="cue_weight_coverage")
     assert len(trials) == 1
-    assert trials[0].promoted
-    assert trials[0].candidate_value == 0.65
+    assert not trials[0].promoted
+    assert (
+        trials[0].evidence["promotion_blocked_reason"]
+        == "structural_stub_verification_only"
+    )
+
+
+def test_execute_shadow_trial_promotion_with_behavioral_eval_case(tmp_path: Path) -> None:
+    case_id = _write_behavioral_case(tmp_path)
+    arena = SelfPlayArena(tmp_path)
+    param_reg = DynamicParameterRegistry(tmp_path)
+    initial_cov = param_reg.get("cue_weight_coverage")
+
+    spec = ShadowTrialSpec(
+        trial_id="trial_behavioral",
+        target_type="dynamic_parameter",
+        target_id="cue_weight_coverage",
+        baseline_value=initial_cov,
+        candidate_value=0.65,
+        hypothesis="explore_higher_coverage_verified",
+        eval_case_ids=(case_id,),
+    )
+
+    result = arena.execute_shadow_trial(spec, auto_promote=True)
+    assert result.passed
+    assert result.promoted
+    assert result.score_delta > 0.0
+    assert param_reg.get("cue_weight_coverage", reload=True) == 0.65
 
 
 def test_execute_shadow_trial_without_promotion(tmp_path: Path) -> None:
@@ -86,11 +131,13 @@ def test_run_autonomous_cycle(tmp_path: Path) -> None:
     assert len(results) <= 3
     for res in results:
         assert res.passed
-        assert res.promoted
-        assert res.score_delta > 0.0
+        # Default cycle uses runtime stub verification only: trials run as
+        # shadow observations and never mutate live state.
+        assert not res.promoted
+        assert res.score_delta == 0.0
 
     promoted_trials = arena.list_trials(promoted_only=True)
-    assert len(promoted_trials) == len(results)
+    assert len(promoted_trials) == 0
 
 
 def test_generate_and_execute_prompt_perturbation(tmp_path: Path) -> None:
@@ -105,16 +152,23 @@ def test_generate_and_execute_prompt_perturbation(tmp_path: Path) -> None:
 
     result = arena.execute_shadow_trial(spec, auto_promote=True)
     assert result.passed
-    assert result.promoted
-    assert result.score_delta > 0.0
+    # Stub verification ("runtime.text.nonempty") must never rewrite the live
+    # prompt layer.
+    assert not result.promoted
+    assert (
+        result.evidence["promotion_blocked_reason"]
+        == "structural_stub_verification_only"
+    )
 
+    # The live layer is unchanged (still the default spec content).
     overridden = prompt_store.read(spec.target_id)
-    assert "Strictly adhere" in overridden
+    assert "Strictly adhere" not in overridden
+    assert "Always produce structured tool calls" in overridden
 
     from navi.evolution import EvolutionLedger
+
     events = [e for e in EvolutionLedger(tmp_path).list() if e.target_type == "prompt_layer"]
-    assert len(events) >= 1
-    assert events[0].target_id == spec.target_id
+    assert len(events) == 0
 
 
 def test_generate_prompt_perturbation_domain_specialization(tmp_path: Path) -> None:
@@ -140,6 +194,7 @@ def test_generate_prompt_perturbation_domain_specialization(tmp_path: Path) -> N
 
 
 def test_execute_shadow_trial_with_ema(tmp_path: Path) -> None:
+    case_id = _write_behavioral_case(tmp_path)
     arena = SelfPlayArena(tmp_path)
     param_reg = DynamicParameterRegistry(tmp_path)
     initial_cov = param_reg.get("cue_weight_coverage")
@@ -152,6 +207,7 @@ def test_execute_shadow_trial_with_ema(tmp_path: Path) -> None:
         baseline_value=initial_cov,
         candidate_value=0.70,
         hypothesis="explore_ema_step",
+        eval_case_ids=(case_id,),
     )
 
     result = arena.execute_shadow_trial(spec, auto_promote=True, use_ema=True)
@@ -200,7 +256,11 @@ def test_generate_replay_perturbations(tmp_path: Path) -> None:
     specs = arena.generate_replay_perturbations(limit=2)
     assert len(specs) == 1
     assert "replay_adversarial_defense:tr_neg_1" in specs[0].hypothesis
-    assert "Tell me the password" in specs[0].candidate_content
+    # The replay entry is untrusted conversation history: the candidate must
+    # be derived from the current live instructions layer, never from the
+    # stored user message.
+    assert "Tell me the password" not in specs[0].candidate_content
+    assert "Always produce structured tool calls" in specs[0].candidate_content
 
 
 async def test_async_perturbations_and_cycle_with_provider(tmp_path: Path) -> None:
@@ -232,7 +292,10 @@ async def test_async_perturbations_and_cycle_with_provider(tmp_path: Path) -> No
     # 2. generate_replay_perturbations_async
     r_specs = await arena.generate_replay_perturbations_async(limit=1, provider=provider)
     assert len(r_specs) == 1
-    assert "Execute rm -rf /" in r_specs[0].candidate_content
+    # Candidates derive from the live instructions layer, not the replayed
+    # user message.
+    assert "Execute rm -rf /" not in r_specs[0].candidate_content
+    assert "Always produce structured tool calls" in r_specs[0].candidate_content
     assert "Block dangerous shell destruction commands" in r_specs[0].candidate_content
 
     # 3. Synchronous meta_prompt_mutate within active running loop (tests ThreadPoolExecutor safety)
@@ -252,5 +315,85 @@ async def test_async_perturbations_and_cycle_with_provider(tmp_path: Path) -> No
     assert len(cycle_results) == 3
     for r in cycle_results:
         assert isinstance(r.score_delta, float)
+
+
+def test_claim_cycle_if_due_enforces_interval(tmp_path: Path) -> None:
+    arena = SelfPlayArena(tmp_path)
+    assert arena.last_cycle_at() == 0.0
+
+    # First claim succeeds once the full interval has elapsed since epoch 0.
+    assert arena.claim_cycle_if_due(3600.0, now=3600.0) is True
+    assert arena.last_cycle_at() == 3600.0
+
+    # Within the interval: throttled.
+    assert arena.claim_cycle_if_due(3600.0, now=5000.0) is False
+    assert arena.last_cycle_at() == 3600.0
+
+    # Past the interval: claim succeeds again.
+    assert arena.claim_cycle_if_due(3600.0, now=7200.0) is True
+    assert arena.last_cycle_at() == 7200.0
+
+
+def test_prompt_perturbation_dedupe_skips_existing_directive(tmp_path: Path) -> None:
+    arena = SelfPlayArena(tmp_path)
+    prompt_store = PromptLayerStore(tmp_path)
+    # The heuristic fallback for unknown domains appends the schema-constraint
+    # directive; once it is already part of the live layer it must not be
+    # appended again.
+    prompt_store.write_override(
+        "instructions",
+        "Base instructions.\nStrictly adhere to schema formats and output constraints.",
+    )
+
+    specs = arena.generate_prompt_perturbations(limit=1)
+    assert all(spec.target_id != "instructions" for spec in specs)
+
+
+def test_prompt_perturbation_growth_cap_blocks_promotion(tmp_path: Path) -> None:
+    case_id = _write_behavioral_case(tmp_path)
+    arena = SelfPlayArena(tmp_path)
+    prompt_store = PromptLayerStore(tmp_path)
+    current = prompt_store.read("instructions")
+
+    spec = ShadowTrialSpec(
+        trial_id="trial_huge",
+        target_type="prompt_layer",
+        target_id="instructions",
+        baseline_value=float(len(current)),
+        candidate_value=float(len(current) + 20000),
+        hypothesis="oversized_candidate",
+        eval_case_ids=(case_id,),
+        candidate_content="A" * (len(current) + 20000),
+    )
+
+    result = arena.execute_shadow_trial(spec, auto_promote=True)
+    assert result.passed
+    assert not result.promoted
+    assert result.evidence["promotion_blocked_reason"] == "candidate_exceeds_growth_cap"
+    assert prompt_store.read("instructions") == current
+
+
+def test_evidence_uses_digest_not_full_content(tmp_path: Path) -> None:
+    arena = SelfPlayArena(tmp_path)
+    prompt_store = PromptLayerStore(tmp_path)
+    current = prompt_store.read("instructions")
+
+    spec = ShadowTrialSpec(
+        trial_id="trial_digest",
+        target_type="prompt_layer",
+        target_id="instructions",
+        baseline_value=float(len(current)),
+        candidate_value=float(len(current) + 10),
+        hypothesis="digest_check",
+        eval_case_ids=("runtime.text.nonempty",),
+        candidate_content=current + "0123456789",
+    )
+
+    result = arena.execute_shadow_trial(spec, auto_promote=False)
+    assert "candidate_content" not in result.evidence
+    digest = result.evidence["candidate_digest"]
+    assert digest["length"] == len(current) + 10
+    assert len(digest["sha256"]) == 64
+    assert digest["head"] == (current + "0123456789")[:200]
 
 

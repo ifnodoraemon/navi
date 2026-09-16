@@ -30,6 +30,8 @@ from .defaults import (
     DEFAULT_WEIXIN_DM_POLICY,
     DEFAULT_WEIXIN_ENABLED,
     DEFAULT_WEIXIN_GROUP_POLICY,
+    DEFAULT_EVOLUTION_SELF_PLAY_ENABLED,
+    DEFAULT_EVOLUTION_SELF_PLAY_MIN_INTERVAL_SECONDS,
 )
 from .paths import ensure_home
 from .provider_specs import get_provider_spec
@@ -186,6 +188,12 @@ def _default_mcp_servers() -> dict[str, dict[str, Any]]:
 
 
 @dataclass
+class EvolutionConfig:
+    self_play_enabled: bool = DEFAULT_EVOLUTION_SELF_PLAY_ENABLED
+    self_play_min_interval_seconds: float = DEFAULT_EVOLUTION_SELF_PLAY_MIN_INTERVAL_SECONDS
+
+
+@dataclass
 class NaviConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
@@ -194,6 +202,7 @@ class NaviConfig:
     search: SearchConfig = field(default_factory=SearchConfig)
     connectors: dict[str, dict[str, Any]] = field(default_factory=_default_connectors)
     mcp_servers: dict[str, dict[str, Any]] = field(default_factory=_default_mcp_servers)
+    evolution: EvolutionConfig = field(default_factory=EvolutionConfig)
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -215,7 +224,16 @@ def load_config(home: Path | None = None) -> NaviConfig:
             + ", ".join(present_legacy)
         )
     raw = _read_yaml(home / "config.yaml")
-    allowed_sections = {"model", "runtime", "execution", "api", "search", "connectors", "mcp"}
+    allowed_sections = {
+        "model",
+        "runtime",
+        "execution",
+        "api",
+        "search",
+        "connectors",
+        "mcp",
+        "evolution",
+    }
     unknown_sections = sorted(set(raw) - allowed_sections)
     if unknown_sections:
         raise ValueError(f"unsupported top-level config sections: {', '.join(unknown_sections)}")
@@ -227,6 +245,7 @@ def load_config(home: Path | None = None) -> NaviConfig:
     search_raw = _mapping(raw.get("search"), "search")
     connectors_raw = _mapping(raw.get("connectors"), "connectors")
     mcp_raw = _mapping(raw.get("mcp"), "mcp")
+    evolution_raw = _mapping(raw.get("evolution"), "evolution")
     _reject_unknown(runtime_raw, {"service_name", "local_surface"}, "runtime")
     _reject_unknown(execution_raw, {"provider", "timeout_seconds"}, "execution")
     _reject_unknown(api_raw, {"host", "port", "api_key"}, "api")
@@ -279,6 +298,24 @@ def load_config(home: Path | None = None) -> NaviConfig:
     unknown_mcp = sorted(set(mcp_raw) - {"servers"})
     if unknown_mcp:
         raise ValueError(f"unsupported mcp config fields: {', '.join(unknown_mcp)}")
+    _reject_unknown(
+        evolution_raw,
+        {"self_play_enabled", "self_play_min_interval_seconds"},
+        "evolution",
+    )
+    evolution = EvolutionConfig(
+        self_play_enabled=_boolean(
+            evolution_raw.get("self_play_enabled", DEFAULT_EVOLUTION_SELF_PLAY_ENABLED),
+            "evolution.self_play_enabled",
+        ),
+        self_play_min_interval_seconds=_positive_float(
+            evolution_raw.get(
+                "self_play_min_interval_seconds",
+                DEFAULT_EVOLUTION_SELF_PLAY_MIN_INTERVAL_SECONDS,
+            ),
+            "evolution.self_play_min_interval_seconds",
+        ),
+    )
     return NaviConfig(
         model=model,
         runtime=runtime,
@@ -287,6 +324,7 @@ def load_config(home: Path | None = None) -> NaviConfig:
         search=search,
         connectors=connectors,
         mcp_servers=mcp_servers,
+        evolution=evolution,
     )
 
 
@@ -345,6 +383,12 @@ def write_default_config(home: Path | None = None) -> Path:
                 },
                 "connectors": _default_connectors(),
                 "mcp": {"servers": _default_mcp_servers()},
+                "evolution": {
+                    "self_play_enabled": DEFAULT_EVOLUTION_SELF_PLAY_ENABLED,
+                    "self_play_min_interval_seconds": (
+                        DEFAULT_EVOLUTION_SELF_PLAY_MIN_INTERVAL_SECONDS
+                    ),
+                },
             },
             sort_keys=False,
         ),
