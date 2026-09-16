@@ -200,3 +200,41 @@ def test_dynamic_parameter_rollback_reset_and_decay(tmp_path: Path) -> None:
     assert decayed == 25.0
     assert reg.get("provider_retry_after_seconds") == 25.0
 
+
+class _CountingProvider(SQLiteMemoryProvider):
+    def __init__(self, path) -> None:
+        super().__init__(path)
+        self.if_absent_calls = 0
+        self.list_calls = 0
+
+    def set_parameter_if_absent(self, *args, **kwargs):
+        self.if_absent_calls += 1
+        return super().set_parameter_if_absent(*args, **kwargs)
+
+    def list_parameters(self):
+        self.list_calls += 1
+        return super().list_parameters()
+
+
+def test_parameter_seeding_happens_once_per_process(tmp_path: Path) -> None:
+    from navi.memory.store import db_paths
+
+    provider = _CountingProvider(db_paths(tmp_path).memory)
+    store = MemoryStore(tmp_path, provider=provider)
+
+    store.get_parameter("cue_weight_coverage")
+    seeded_after_first = provider.if_absent_calls
+    assert seeded_after_first == len(DEFAULT_MEMORY_PARAMETERS)
+
+    # Hot path: repeated reads must not replay the seeding sweep.
+    for _ in range(20):
+        store.get_parameter("cue_weight_jaccard")
+    assert provider.if_absent_calls == seeded_after_first
+
+    # Cache refresh after TTL reloads values without re-seeding.
+    store._parameters_loaded_at -= store._PARAMETER_CACHE_TTL_SECONDS + 1.0
+    store.get_parameter("cue_weight_sequence")
+    assert provider.if_absent_calls == seeded_after_first
+    assert provider.list_calls >= 2
+
+

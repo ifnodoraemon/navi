@@ -136,20 +136,30 @@ class MemoryStore:
         self.provider = provider or SQLiteMemoryProvider(db_paths(home).memory)
         self._parameters_cache: dict[str, float] = {}
         self._parameters_initialized = False
+        self._parameters_loaded_at = 0.0
         self._recent_recall_queries: dict[str, str] = {}
         self._registry = registry  # DynamicParameterRegistry or None (unified param surface)
 
+    _PARAMETER_CACHE_TTL_SECONDS = 300.0
+
     def _ensure_parameters(self) -> None:
         now = time.time()
-        for name, default_val in DEFAULT_MEMORY_PARAMETERS.items():
-            self.provider.set_parameter_if_absent(
-                name,
-                default_val,
-                updated_at=now,
-                metadata={"reason": "default_initialization"},
-            )
+        if self._parameters_initialized and (
+            now - self._parameters_loaded_at < self._PARAMETER_CACHE_TTL_SECONDS
+        ):
+            return
+        if not self._parameters_initialized:
+            for name, default_val in DEFAULT_MEMORY_PARAMETERS.items():
+                self.provider.set_parameter_if_absent(
+                    name,
+                    default_val,
+                    updated_at=now,
+                    metadata={"reason": "default_initialization"},
+                )
         persisted = self.provider.list_parameters()
         self._parameters_cache = {name: val for name, (val, _, _) in persisted.items()}
+        self._parameters_initialized = True
+        self._parameters_loaded_at = now
 
     def get_parameter(self, name: str, default: float | None = None) -> float:
         # Try unified registry first (supports Adam momentum, EMA, rollback)
