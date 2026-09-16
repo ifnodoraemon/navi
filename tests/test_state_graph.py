@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import re
 import shlex
@@ -67,12 +68,12 @@ def _planner_turn_input(provider: object) -> str:
 
 def _runtime_facts_from_turn_input(turn_input: str) -> dict:
     match = re.search(
-        r"<runtime_facts>\s*<!\[CDATA\[(.*?)\]\]>\s*</runtime_facts>",
+        r'<untrusted_input name="runtime_facts">\s*(.*?)\s*</untrusted_input>',
         turn_input,
         re.DOTALL,
     )
     assert match is not None
-    return json.loads(match.group(1))
+    return json.loads(html.unescape(match.group(1)))
 
 
 def test_semantic_checker_evidence_includes_current_capability_execution() -> None:

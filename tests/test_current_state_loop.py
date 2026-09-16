@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import re
 from dataclasses import replace
@@ -734,12 +735,12 @@ async def test_connector_source_and_ingress_facts_survive_shared_planner_boundar
     assert planned.tool == "respond"
     turn_input = provider.messages[-1].content
     facts_match = re.search(
-        r"<runtime_facts>\s*<!\[CDATA\[(.*?)\]\]>\s*</runtime_facts>",
+        r'<untrusted_input name="runtime_facts">\s*(.*?)\s*</untrusted_input>',
         turn_input,
         re.DOTALL,
     )
     assert facts_match is not None
-    planner_facts = json.loads(facts_match.group(1))
+    planner_facts = json.loads(html.unescape(facts_match.group(1)))
     assert "current_state" not in planner_facts["ingress_facts"]["intent_facts"]
     assert "evidence" not in planner_facts["loop_run_state"]
     assert planner_facts["loop_run_state"]["evidence_keys"] == ["durable_payload"]
@@ -948,12 +949,12 @@ async def test_planner_ingress_projects_ambient_goal_outcomes_by_task_context(
     assert leak_text not in turn_input
     assert active_leak_text not in turn_input
     facts_match = re.search(
-        r"<runtime_facts>\s*<!\[CDATA\[(.*?)\]\]>\s*</runtime_facts>",
+        r'<untrusted_input name="runtime_facts">\s*(.*?)\s*</untrusted_input>',
         turn_input,
         re.DOTALL,
     )
     assert facts_match is not None
-    planner_facts = json.loads(facts_match.group(1))
+    planner_facts = json.loads(html.unescape(facts_match.group(1)))
     ingress_facts = planner_facts["ingress_facts"]
     assert ingress_facts["task_context"]["lineage"]["id"] == current_lineage
     assert ingress_facts["task_context"]["progress"]["sequence_number"] == 2

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import re
 
@@ -414,12 +415,12 @@ async def test_planner_rebuilds_current_state_after_approval_changes(tmp_path) -
 
     turn_input = provider.messages[-1].content
     match = re.search(
-        r"<runtime_facts>\s*<!\[CDATA\[(.*?)\]\]>\s*</runtime_facts>",
+        r'<untrusted_input name="runtime_facts">\s*(.*?)\s*</untrusted_input>',
         turn_input,
         re.DOTALL,
     )
     assert match is not None
-    planner_facts = json.loads(match.group(1))
+    planner_facts = json.loads(html.unescape(match.group(1)))
     pending = planner_facts["ingress_facts"]["current_state"]["pending_approvals"]
     assert [item["id"] for item in pending] == [current.id]
     assert all(item["id"] != old.id for item in pending)

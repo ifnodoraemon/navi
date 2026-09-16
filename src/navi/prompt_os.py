@@ -82,14 +82,26 @@ def render_prompt_blocks(blocks: Iterable[PromptBlock]) -> str:
         if not content:
             continue
         tag = _block_xml_tag(block.name)
-        escaped_content = _escape_xml_text(content)
-        format_strategies = (
-            (_is_json_document(content), f"<{tag}>\n<![CDATA[{content}]]>\n</{tag}>"),
-            (block.trusted, f"<{tag}>\n{escaped_content}\n</{tag}>"),
-            (True, f'<untrusted_input name="{tag}">\n{escaped_content}\n</untrusted_input>'),
-        )
-        rendered.append(next(body for cond, body in format_strategies if cond))
+        if not block.trusted:
+            # Untrusted content is always data. It is XML-escaped inside an
+            # explicit untrusted_input wrapper and never emitted into CDATA,
+            # so neither a "]]>" terminator nor tag-shaped text can forge
+            # trusted prompt structure, no matter how the payload starts or
+            # ends (a JSON-shaped first/last character is not a trust signal).
+            rendered.append(
+                f'<untrusted_input name="{tag}">\n{_escape_xml_text(content)}\n</untrusted_input>'
+            )
+            continue
+        if _is_json_document(content):
+            rendered.append(f"<{tag}>\n<![CDATA[{_escape_cdata(content)}]]>\n</{tag}>")
+            continue
+        rendered.append(f"<{tag}>\n{_escape_xml_text(content)}\n</{tag}>")
     return "\n\n".join(rendered)
+
+
+def _escape_cdata(text: str) -> str:
+    """Split CDATA terminators so payload text can never close the section early."""
+    return text.replace("]]>", "]]]]><![CDATA[>")
 
 
 def _block_xml_tag(block_name: str) -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import re
 
@@ -79,12 +80,12 @@ async def test_fact_response_projects_large_capability_evidence_before_model_cal
 
     rendered = runtime.messages[-1].content
     match = re.search(
-        r"<verified_facts>\s*<!\[CDATA\[(.*?)\]\]>\s*</verified_facts>",
+        r'<untrusted_input name="verified_facts">\s*(.*?)\s*</untrusted_input>',
         rendered,
         re.DOTALL,
     )
     assert match is not None
-    facts = json.loads(match.group(1))
+    facts = json.loads(html.unescape(match.group(1)))
     assert "[truncated" in facts["capability_result"]["facts"]["content"]
 
 
