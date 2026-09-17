@@ -63,42 +63,95 @@ from .provider import (
     ProviderResponseError,
     StructuredOutputError,
 )
-from .dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
+from .dynamic_parameters import dynamic_parameter
 from .text_utils import truncate_middle
 from .trace import TraceStore
 from .workspaces import LockAcquireResult
 
-PLANNER_CONTEXT_MESSAGE_LIMIT = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_context_message_limit", 200.0))
-PLANNER_CONTEXT_RECENT_MESSAGES = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_context_recent_messages", 12.0))
-PLANNER_CONTEXT_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_context_max_chars", 12_000.0))
-PLANNER_CONTEXT_OLDER_PREVIEW_MESSAGES = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_context_older_preview_messages", 8.0))
-PLANNER_CONTEXT_OLDER_PREVIEW_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_context_older_preview_chars", 220.0))
-PLANNER_CONTEXT_RECENT_MESSAGE_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_context_recent_message_max_chars", 2_000.0))
-PLANNER_MEMORY_ITEM_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_memory_item_max_chars", 800.0))
-PLANNER_ATTEMPT_HISTORY_LIMIT = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_attempt_history_limit", 8.0))
-PLANNER_ATTEMPT_HISTORY_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_attempt_history_max_chars", 16_000.0))
-PLANNER_ATTEMPT_MESSAGE_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_attempt_message_max_chars", 1_000.0))
-PLANNER_PRIOR_RESULT_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_prior_result_max_chars", 4_000.0))
-PLANNER_AMBIENT_RECORD_LIMIT = int(SYSTEM_DYNAMIC_PARAMETERS.get("planner_ambient_record_limit", 3.0))
-SEMANTIC_CHECKER_ATTEMPT_LIMIT = int(SYSTEM_DYNAMIC_PARAMETERS.get("semantic_checker_attempt_limit", 4.0))
-SEMANTIC_CHECKER_ARGS_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("semantic_checker_args_max_chars", 3_000.0))
-SEMANTIC_CHECKER_FACTS_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("semantic_checker_facts_max_chars", 6_000.0))
-SEMANTIC_CHECKER_MESSAGE_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("semantic_checker_message_max_chars", 3_000.0))
+
+# Runtime tunables: read through the dynamic-parameter registry so
+# persisted drift (self-evolution, rollback, manual set) takes effect
+# without a process restart. See dynamic_parameters.py for the plane.
+def _planner_context_message_limit() -> int:
+    return int(dynamic_parameter("planner_context_message_limit", 200.0))
+
+def _planner_context_recent_messages() -> int:
+    return int(dynamic_parameter("planner_context_recent_messages", 12.0))
+
+def _planner_context_max_chars() -> int:
+    return int(dynamic_parameter("planner_context_max_chars", 12_000.0))
+
+def _planner_context_older_preview_messages() -> int:
+    return int(dynamic_parameter("planner_context_older_preview_messages", 8.0))
+
+def _planner_context_older_preview_chars() -> int:
+    return int(dynamic_parameter("planner_context_older_preview_chars", 220.0))
+
+def _planner_context_recent_message_max_chars() -> int:
+    return int(dynamic_parameter("planner_context_recent_message_max_chars", 2_000.0))
+
+def _planner_memory_item_max_chars() -> int:
+    return int(dynamic_parameter("planner_memory_item_max_chars", 800.0))
+
+def _planner_attempt_history_limit() -> int:
+    return int(dynamic_parameter("planner_attempt_history_limit", 8.0))
+
+def _planner_attempt_history_max_chars() -> int:
+    return int(dynamic_parameter("planner_attempt_history_max_chars", 16_000.0))
+
+def _planner_attempt_message_max_chars() -> int:
+    return int(dynamic_parameter("planner_attempt_message_max_chars", 1_000.0))
+
+def _planner_prior_result_max_chars() -> int:
+    return int(dynamic_parameter("planner_prior_result_max_chars", 4_000.0))
+
+def _planner_ambient_record_limit() -> int:
+    return int(dynamic_parameter("planner_ambient_record_limit", 3.0))
+
+def _semantic_checker_attempt_limit() -> int:
+    return int(dynamic_parameter("semantic_checker_attempt_limit", 4.0))
+
+def _semantic_checker_args_max_chars() -> int:
+    return int(dynamic_parameter("semantic_checker_args_max_chars", 3_000.0))
+
+def _semantic_checker_facts_max_chars() -> int:
+    return int(dynamic_parameter("semantic_checker_facts_max_chars", 6_000.0))
+
+def _semantic_checker_message_max_chars() -> int:
+    return int(dynamic_parameter("semantic_checker_message_max_chars", 3_000.0))
+
 # The verdict's evidence_summary must stay short enough that the JSON object
 # cannot be truncated by the checker's max_tokens budget. An over-long summary
 # was the direct trigger of a turn-killing StructuredOutputError.
-SEMANTIC_CHECKER_EVIDENCE_SUMMARY_MAX_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("semantic_checker_evidence_summary_max_chars", 2_000.0))
-SEMANTIC_CHECKER_VERDICT_ERROR_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("semantic_checker_verdict_error_chars", 200.0))
+def _semantic_checker_evidence_summary_max_chars() -> int:
+    return int(dynamic_parameter("semantic_checker_evidence_summary_max_chars", 2_000.0))
+
+def _semantic_checker_verdict_error_chars() -> int:
+    return int(dynamic_parameter("semantic_checker_verdict_error_chars", 200.0))
+
 # A malformed checker verdict (truncated or invalid JSON) is a boundary
 # failure of the verdict call, not a verdict. The port re-asks the model a
 # bounded number of times before failing closed so the loop stays governed.
-SEMANTIC_CHECKER_VERDICT_RETRIES = int(SYSTEM_DYNAMIC_PARAMETERS.get("semantic_checker_verdict_retries", 1.0))
-TASK_RESULT_PREVIEW_CHARS = int(SYSTEM_DYNAMIC_PARAMETERS.get("task_result_preview_chars", 240.0))
-PROVIDER_TRANSPORT_MAX_RETRIES = int(SYSTEM_DYNAMIC_PARAMETERS.get("provider_transport_max_retries", 3.0))
-PROVIDER_TRANSPORT_RETRY_MIN_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("provider_transport_retry_min_seconds", 1.0))
-PROVIDER_TRANSPORT_RETRY_MAX_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("provider_transport_retry_max_seconds", 300.0))
-EXECUTION_LEASE_MIN_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("execution_lease_min_seconds", 900.0))
-EXECUTION_LEASE_HEARTBEAT_MAX_SECONDS = float(SYSTEM_DYNAMIC_PARAMETERS.get("execution_lease_heartbeat_max_seconds", 30.0))
+def _semantic_checker_verdict_retries() -> int:
+    return int(dynamic_parameter("semantic_checker_verdict_retries", 1.0))
+
+def _task_result_preview_chars() -> int:
+    return int(dynamic_parameter("task_result_preview_chars", 240.0))
+
+def _provider_transport_max_retries() -> int:
+    return int(dynamic_parameter("provider_transport_max_retries", 3.0))
+
+def _provider_transport_retry_min_seconds() -> float:
+    return float(dynamic_parameter("provider_transport_retry_min_seconds", 1.0))
+
+def _provider_transport_retry_max_seconds() -> float:
+    return float(dynamic_parameter("provider_transport_retry_max_seconds", 300.0))
+
+def _execution_lease_min_seconds() -> float:
+    return float(dynamic_parameter("execution_lease_min_seconds", 900.0))
+
+def _execution_lease_heartbeat_max_seconds() -> float:
+    return float(dynamic_parameter("execution_lease_heartbeat_max_seconds", 30.0))
 
 
 def _exc_message(exc: BaseException, *, limit: int = 1_000) -> str:
@@ -411,7 +464,7 @@ class LLMSemanticCheckerPort:
     ) -> SemanticCheckDecision:
         messages = self._build_messages(spec, state, executed=executed, evidence=evidence)
         verdict_failures: list[str] = []
-        for _ in range(1 + SEMANTIC_CHECKER_VERDICT_RETRIES):
+        for _ in range(1 + _semantic_checker_verdict_retries()):
             try:
                 response = await self.runtime.provider.complete_for(
                     "checker",
@@ -427,7 +480,7 @@ class LLMSemanticCheckerPort:
                 # Transport and resource errors are deliberately NOT caught here:
                 # they keep the durable retry-gate / resource-pause machinery.
                 verdict_failures.append(
-                    _exc_message(exc, limit=SEMANTIC_CHECKER_VERDICT_ERROR_CHARS)
+                    _exc_message(exc, limit=_semantic_checker_verdict_error_chars())
                 )
         return SemanticCheckDecision(
             passed=False,
@@ -493,7 +546,7 @@ def _semantic_checker_output_schema() -> dict[str, Any]:
                 "passed": {"type": "boolean"},
                 "evidence_summary": {
                     "type": "string",
-                    "maxLength": SEMANTIC_CHECKER_EVIDENCE_SUMMARY_MAX_CHARS,
+                    "maxLength": _semantic_checker_evidence_summary_max_chars(),
                 },
             },
             "required": ["passed", "evidence_summary"],
@@ -783,7 +836,7 @@ def _text_fingerprint(text: str) -> str:
 
 def _result_preview(text: str) -> str:
     clean = _canonical_result_text(text)
-    return truncate_middle(clean, TASK_RESULT_PREVIEW_CHARS)
+    return truncate_middle(clean, _task_result_preview_chars())
 
 
 def _int_or_default(value: Any, default: int) -> int:
@@ -980,9 +1033,9 @@ def _bounded_conversation_context(
         "session_id": session_id,
         "message_count": len(relevant),
         "raw_character_count": raw_chars,
-        "max_character_count": PLANNER_CONTEXT_MAX_CHARS,
-        "recent_message_limit": PLANNER_CONTEXT_RECENT_MESSAGES,
-        "message_fetch_limit": PLANNER_CONTEXT_MESSAGE_LIMIT,
+        "max_character_count": _planner_context_max_chars(),
+        "recent_message_limit": _planner_context_recent_messages(),
+        "message_fetch_limit": _planner_context_message_limit(),
         "policy": "bounded_conversation_context_v1",
         "consumer": consumer,
     }
@@ -991,7 +1044,7 @@ def _bounded_conversation_context(
 
     raw_text = "\n\n".join(_format_conversation_message(msg) for msg in relevant)
     should_compact = (
-        len(relevant) > PLANNER_CONTEXT_RECENT_MESSAGES or len(raw_text) > PLANNER_CONTEXT_MAX_CHARS
+        len(relevant) > _planner_context_recent_messages() or len(raw_text) > _planner_context_max_chars()
     )
     if not should_compact:
         return BoundedConversationContext(
@@ -1005,14 +1058,14 @@ def _bounded_conversation_context(
             },
         )
 
-    recent = relevant[-PLANNER_CONTEXT_RECENT_MESSAGES:]
-    older = relevant[:-PLANNER_CONTEXT_RECENT_MESSAGES]
+    recent = relevant[-_planner_context_recent_messages():]
+    older = relevant[:-_planner_context_recent_messages()]
     older_user_messages = [
         (index, msg)
         for index, msg in enumerate(older, start=1)
         if str(getattr(msg, "role", "")) == "user"
     ]
-    preview_items = older_user_messages[-PLANNER_CONTEXT_OLDER_PREVIEW_MESSAGES:]
+    preview_items = older_user_messages[-_planner_context_older_preview_messages():]
     preview_lines = [
         f"Conversation context was compacted before {consumer} intake.",
         f"Older messages omitted: {len(older)}.",
@@ -1032,13 +1085,13 @@ def _bounded_conversation_context(
     truncated_recent = 0
     for msg in recent:
         content = str(getattr(msg, "content", "") or "")
-        if len(content) > PLANNER_CONTEXT_RECENT_MESSAGE_MAX_CHARS:
+        if len(content) > _planner_context_recent_message_max_chars():
             truncated_recent += 1
-            content = truncate_middle(content, PLANNER_CONTEXT_RECENT_MESSAGE_MAX_CHARS)
+            content = truncate_middle(content, _planner_context_recent_message_max_chars())
         recent_lines.append(_format_conversation_message(msg, content=content))
     compacted_text = "\n".join(preview_lines + [""] + recent_lines)
-    if len(compacted_text) > PLANNER_CONTEXT_MAX_CHARS:
-        compacted_text = truncate_middle(compacted_text, PLANNER_CONTEXT_MAX_CHARS)
+    if len(compacted_text) > _planner_context_max_chars():
+        compacted_text = truncate_middle(compacted_text, _planner_context_max_chars())
     return BoundedConversationContext(
         text=compacted_text,
         facts={
@@ -1107,7 +1160,7 @@ def _semantic_checker_conversation_context(
         session_id=session_id,
         messages=runtime.memory.get_messages(
             session_id,
-            limit=PLANNER_CONTEXT_MESSAGE_LIMIT,
+            limit=_planner_context_message_limit(),
         ),
         consumer="semantic_checker",
     )
@@ -1156,7 +1209,7 @@ def _render_planner_memory_context(recalls: list[Any]) -> str:
         lines.append(
             f"- [id={item.id} type={item.type} scope={item.scope} "
             f"confidence={item.confidence:.2f} score={recall.score:.4f}] "
-            f"{truncate_middle(item.content, PLANNER_MEMORY_ITEM_MAX_CHARS)}"
+            f"{truncate_middle(item.content, _planner_memory_item_max_chars())}"
         )
         if recall.reasons:
             lines.append(f"  reasons: {', '.join(recall.reasons)}")
@@ -1231,10 +1284,10 @@ def _format_conversation_message(message: Any, *, content: str | None = None) ->
 
 def _head_preview(text: str) -> str:
     clean = " ".join(text.split())
-    if len(clean) <= PLANNER_CONTEXT_OLDER_PREVIEW_CHARS:
+    if len(clean) <= _planner_context_older_preview_chars():
         return clean
-    omitted = len(clean) - PLANNER_CONTEXT_OLDER_PREVIEW_CHARS
-    return f"{clean[:PLANNER_CONTEXT_OLDER_PREVIEW_CHARS]} ... [truncated tail {omitted} chars]"
+    omitted = len(clean) - _planner_context_older_preview_chars()
+    return f"{clean[:_planner_context_older_preview_chars()]} ... [truncated tail {omitted} chars]"
 
 
 class ModelCapabilityPlannerPort:
@@ -1295,7 +1348,7 @@ class ModelCapabilityPlannerPort:
                     session_id=session_id,
                     messages=self.runtime.memory.get_messages(
                         session_id,
-                        limit=PLANNER_CONTEXT_MESSAGE_LIMIT,
+                        limit=_planner_context_message_limit(),
                     ),
                     consumer="planner",
                 ),
@@ -1576,7 +1629,7 @@ class DurableStateGraphRunner:
             return StateGraphRunResult(run_state=state, evidence=evidence or {})
         if not self._lease_claimed:
             lease_seconds = max(
-                EXECUTION_LEASE_MIN_SECONDS,
+                _execution_lease_min_seconds(),
                 max(step.timeout.seconds for step in spec.verification_ladder) + 60.0,
             )
             claimed = self.store.claim_for_execution(
@@ -2775,7 +2828,7 @@ class DurableStateGraphRunner:
     ) -> None:
         interval = max(
             0.05,
-            min(EXECUTION_LEASE_HEARTBEAT_MAX_SECONDS, lease_seconds / 3.0),
+            min(_execution_lease_heartbeat_max_seconds(), lease_seconds / 3.0),
         )
         try:
             while True:
@@ -3420,10 +3473,10 @@ def _planner_task_context(task_context: dict[str, Any]) -> dict[str, Any]:
                 "result_source": prior["source"],
                 "result_text": truncate_middle(
                     result_text,
-                    PLANNER_PRIOR_RESULT_MAX_CHARS,
+                    _planner_prior_result_max_chars(),
                 ),
                 "result_characters": len(result_text),
-                "result_truncated": len(result_text) > PLANNER_PRIOR_RESULT_MAX_CHARS,
+                "result_truncated": len(result_text) > _planner_prior_result_max_chars(),
             }
         )
     projected = {
@@ -3443,9 +3496,9 @@ def _planner_task_context(task_context: dict[str, Any]) -> dict[str, Any]:
     bounded = project_model_facts(
         projected,
         max_characters=(
-            PLANNER_PRIOR_RESULT_MAX_CHARS * max(1, len(prior_items)) + 4_000
+            _planner_prior_result_max_chars() * max(1, len(prior_items)) + 4_000
         ),
-        max_string_characters=PLANNER_PRIOR_RESULT_MAX_CHARS,
+        max_string_characters=_planner_prior_result_max_chars(),
         max_depth=6,
         max_items=30,
     )
@@ -3578,7 +3631,7 @@ def _project_current_state_for_task(
         "ambient_active_goal_count": len(ambient_goals),
         "ambient_active_loop_run_count": len(ambient_loop_runs),
         "ambient_recent_delivery_count": len(ambient_deliveries),
-        "ambient_record_limit": PLANNER_AMBIENT_RECORD_LIMIT,
+        "ambient_record_limit": _planner_ambient_record_limit(),
     }
     return projected
 
@@ -3669,10 +3722,12 @@ def _append_ambient_records(
 ) -> None:
     if not records:
         return
-    trimmed = records[:PLANNER_AMBIENT_RECORD_LIMIT]
+    trimmed = records[:_planner_ambient_record_limit()]
     existing = container.get(key)
-    base = {True: existing, False: []}[isinstance(existing, list)]
-    container[key] = [*base, *trimmed][:PLANNER_AMBIENT_RECORD_LIMIT]
+    base: list[dict[str, Any]] = []
+    if isinstance(existing, list):
+        base = existing
+    container[key] = [*base, *trimmed][:_planner_ambient_record_limit()]
 
 
 def _ambient_goal_outcome(record: dict[str, Any]) -> dict[str, Any]:
@@ -3856,7 +3911,7 @@ def _planner_attempt_history(evidence: dict[str, Any]) -> list[dict[str, Any]]:
     raw_history = evidence.get("attempt_history") or []
     if not isinstance(raw_history, list):
         return []
-    for raw in raw_history[-PLANNER_ATTEMPT_HISTORY_LIMIT:]:
+    for raw in raw_history[-_planner_attempt_history_limit():]:
         if not isinstance(raw, dict):
             continue
         facts = raw.get("facts")
@@ -3868,7 +3923,7 @@ def _planner_attempt_history(evidence: dict[str, Any]) -> list[dict[str, Any]]:
         }
         has_preview = bool(candidate_response and message)
         preview_map = {
-            True: truncate_middle(message, PLANNER_ATTEMPT_MESSAGE_MAX_CHARS),
+            True: truncate_middle(message, _planner_attempt_message_max_chars()),
             False: "",
         }
         facts_dict = {
@@ -3887,8 +3942,8 @@ def _planner_attempt_history(evidence: dict[str, Any]) -> list[dict[str, Any]]:
         )
     projected = project_model_facts(
         compact,
-        max_characters=PLANNER_ATTEMPT_HISTORY_MAX_CHARS,
-        max_string_characters=PLANNER_ATTEMPT_MESSAGE_MAX_CHARS,
+        max_characters=_planner_attempt_history_max_chars(),
+        max_string_characters=_planner_attempt_message_max_chars(),
         max_depth=6,
         max_items=30,
     )
@@ -3923,16 +3978,16 @@ def _next_provider_transport_retry_gate_for_facts(
         try:
             prior_count = max(0, int(prior.get("retry_count") or 0))
         except (TypeError, ValueError):
-            prior_count = PROVIDER_TRANSPORT_MAX_RETRIES
-    if prior_count >= PROVIDER_TRANSPORT_MAX_RETRIES:
+            prior_count = _provider_transport_max_retries()
+    if prior_count >= _provider_transport_max_retries():
         return None
     try:
         retry_after = float(failure_facts.get("retry_after_seconds") or 0.0)
     except (TypeError, ValueError):
         retry_after = 0.0
     retry_after = min(
-        PROVIDER_TRANSPORT_RETRY_MAX_SECONDS,
-        max(PROVIDER_TRANSPORT_RETRY_MIN_SECONDS, retry_after),
+        _provider_transport_retry_max_seconds(),
+        max(_provider_transport_retry_min_seconds(), retry_after),
     )
     return {
         "decision": "pause",
@@ -3941,7 +3996,7 @@ def _next_provider_transport_retry_gate_for_facts(
         "model_role": model_role,
         "retry_after_seconds": retry_after,
         "retry_count": prior_count + 1,
-        "max_retries": PROVIDER_TRANSPORT_MAX_RETRIES,
+        "max_retries": _provider_transport_max_retries(),
         "resume_node": str(resume_node),
     }
 
@@ -4006,7 +4061,7 @@ def _semantic_checker_attempt_evidence(evidence: dict[str, Any]) -> list[dict[st
         True: "candidate_response_only",
         False: "declared_capability_observation",
     }
-    for raw in history[-SEMANTIC_CHECKER_ATTEMPT_LIMIT:]:
+    for raw in history[-_semantic_checker_attempt_limit():]:
         if not isinstance(raw, dict):
             continue
         candidate_response = _is_candidate_response_attempt(raw)
@@ -4022,7 +4077,7 @@ def _semantic_checker_attempt_evidence(evidence: dict[str, Any]) -> list[dict[st
                         sort_keys=True,
                         default=str,
                     ),
-                    SEMANTIC_CHECKER_ARGS_MAX_CHARS,
+                    _semantic_checker_args_max_chars(),
                 ),
                 "ok": bool(raw.get("ok", False)),
                 "action": str(raw.get("action") or ""),
@@ -4033,11 +4088,11 @@ def _semantic_checker_attempt_evidence(evidence: dict[str, Any]) -> list[dict[st
                         sort_keys=True,
                         default=str,
                     ),
-                    SEMANTIC_CHECKER_FACTS_MAX_CHARS,
+                    _semantic_checker_facts_max_chars(),
                 ),
                 "message": truncate_middle(
                     redact_secrets(str(raw.get("message") or "")),
-                    SEMANTIC_CHECKER_MESSAGE_MAX_CHARS,
+                    _semantic_checker_message_max_chars(),
                 ),
                 "error_reason": redact_secrets(str(raw.get("error_reason") or "")),
                 "terminal": bool(raw.get("terminal", False)),

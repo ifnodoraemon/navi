@@ -139,7 +139,7 @@ async def test_state_graph_heartbeat_renews_live_execution_lease(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("navi.state_graph.EXECUTION_LEASE_HEARTBEAT_MAX_SECONDS", 0.05)
+    monkeypatch.setattr("navi.state_graph._execution_lease_heartbeat_max_seconds", lambda: 0.05)
     runner = DurableStateGraphRunner(
         home=tmp_path / ".navi",
         execution_owner="state-graph:test-heartbeat",

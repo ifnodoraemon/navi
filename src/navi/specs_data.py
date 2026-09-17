@@ -171,7 +171,7 @@ DEFAULTS_SPEC: Any = {
     "weixin_enabled": False,
     "weixin_base_url": "https://ilinkai.weixin.qq.com",
     "weixin_cdn_base_url": "https://novac2c.cdn.weixin.qq.com/c2c",
-    "weixin_dm_policy": "open",
+    "weixin_dm_policy": "allowlist",
     "weixin_group_policy": "disabled",
 }
 
@@ -360,6 +360,92 @@ PROMPT_ASSEMBLIES_SPEC: Any = {
                     "the result outbox, not by this notification role. Return the "
                     "structured notify/message decision; an empty or low-value event "
                     "should not be surfaced."
+                ),
+            }
+        ],
+    },
+    "memory_rerank_messages": {
+        "blocks": [
+            {
+                "name": "MEMORY RERANK SYSTEM",
+                "tier": "stable",
+                "source": "prompt_specs.memory_rerank.system",
+                "content": (
+                    "You are a memory retrieval relevance judge. "
+                    "Given a query and goal, rank the following memory items by semantic relevance."
+                ),
+            }
+        ],
+    },
+    "memory_conflict_messages": {
+        "blocks": [
+            {
+                "name": "MEMORY CONFLICT AUDITOR SYSTEM",
+                "tier": "stable",
+                "source": "prompt_specs.memory_conflict.system",
+                "content": (
+                    "You are a knowledge consistency auditor. "
+                    "Analyze two memory items and determine if they contradict each other."
+                ),
+            }
+        ],
+    },
+    "memory_repair_messages": {
+        "blocks": [
+            {
+                "name": "MEMORY REPAIR SYSTEM",
+                "tier": "stable",
+                "source": "prompt_specs.memory_repair.system",
+                "content": (
+                    "You are a memory repair agent. A memory item has been penalized "
+                    "and marked stale due to poor performance. Analyze why it might be "
+                    "incorrect or misleading, and produce a corrected version."
+                ),
+            }
+        ],
+    },
+    "llm_judge_messages": {
+        "blocks": [
+            {
+                "name": "LLM JUDGE SYSTEM",
+                "tier": "stable",
+                "source": "prompt_specs.llm_judge.system",
+                "content": (
+                    "You are an expert meta-cognitive evaluator and objective reward critic "
+                    "for an autonomous AI agent.\n"
+                    "Your mission is to evaluate the interaction quality and user satisfaction "
+                    "entirely through deep semantic reasoning.\n"
+                    "\n"
+                    "Evaluation Principles:\n"
+                    "- Analyze the semantic meaning, intent alignment, pragmatic satisfaction, "
+                    "and emotional subtext of the user.\n"
+                    "- If the user provides a follow-up response, examine whether it confirms "
+                    "success, expresses gratitude/praise, or reveals a correction, "
+                    "misunderstanding, complaint, or bug.\n"
+                    "- Do NOT use keyword matching or brittle rules. Reason about the full "
+                    "contextual meaning of the exchange.\n"
+                    "- Scalar reward MUST be a float strictly between -1.0 and +1.0:\n"
+                    "    +0.80 to +1.00: Outstanding success, user delighted, or explicit high praise.\n"
+                    "    +0.20 to +0.79: Standard successful execution, task completed accurately.\n"
+                    "    -0.19 to +0.19: Neutral continuation, clarifying query, or minor ambiguity.\n"
+                    "    -0.50 to -0.20: User pointed out a mistake, inaccurate answer, missing "
+                    "constraint, or needed correction.\n"
+                    "    -1.00 to -0.51: Severe failure, dangerous hallucination, broken contract, "
+                    "data loss, or user strongly frustrated.\n"
+                    "- Verdict must be one of: [\"positive_reinforcement\", \"neutral_continuation\", "
+                    "\"correction_needed\", \"critical_failure\"].\n"
+                    "- Failure domain must be one of: [\"none\", \"planner_or_parser\", "
+                    "\"safeguard_policy\", \"capability_failure\", \"loop_no_progress\", "
+                    "\"checker_blocked\", \"misunderstanding\"].\n"
+                    "\n"
+                    "Respond ONLY with a single valid JSON object with keys:\n"
+                    "{\n"
+                    "  \"reward\": float,\n"
+                    "  \"verdict\": str,\n"
+                    "  \"failure_domain\": str,\n"
+                    "  \"confidence\": float,\n"
+                    "  \"reasoning\": str\n"
+                    "}"
                 ),
             }
         ],

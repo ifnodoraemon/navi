@@ -766,11 +766,11 @@ async def test_daemon_projects_transport_failure_and_releases_resource(
     processed = await SystemDaemon(tmp_path, project_dir=tmp_path).process_queue_once()
     assert [run.id for run in processed] == [opened.run.id]
 
-    # With PROVIDER_TRANSPORT_MAX_RETRIES > 1, subsequent daemon cycles keep
+    # With provider_transport_max_retries > 1, subsequent daemon cycles keep
     # retrying until the gate is exhausted. Drain the remaining retries.
-    from navi.state_graph import PROVIDER_TRANSPORT_MAX_RETRIES
+    from navi.state_graph import _provider_transport_max_retries
 
-    for _ in range(PROVIDER_TRANSPORT_MAX_RETRIES):
+    for _ in range(_provider_transport_max_retries()):
         with connect(LoopRunStore(tmp_path).db_path) as conn:
             conn.execute(
                 "UPDATE loop_runs SET updated_at = 0 WHERE id = ?",
@@ -784,14 +784,14 @@ async def test_daemon_projects_transport_failure_and_releases_resource(
     exhausted = LoopRunStore(tmp_path).get_run(opened.loop_run.run_id)
     assert exhausted is not None
     assert str(exhausted.terminal_state) == "failed"
-    assert exhausted.evidence["retry_gate"]["retry_count"] == PROVIDER_TRANSPORT_MAX_RETRIES
+    assert exhausted.evidence["retry_gate"]["retry_count"] == _provider_transport_max_retries()
     assert exhausted.evidence["reflection"]["facts"]["transport_retry_exhausted"] is True
     goal = GoalStore(tmp_path).get(opened.goal.id)
     assert goal is not None
     assert goal.phase == "ended"
     assert goal.resolution == "failed"
     assert SQLiteResourceLedger(tmp_path).usage(opened.loop_run.run_id).active == 0
-    assert provider.calls == 1 + PROVIDER_TRANSPORT_MAX_RETRIES
+    assert provider.calls == 1 + _provider_transport_max_retries()
     evaluation = TraceStore(tmp_path).list_evaluations(opened.run.id)
     assert len(evaluation) == 1
     assert evaluation[0].outcome == "failure"

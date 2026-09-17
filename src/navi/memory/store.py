@@ -118,6 +118,11 @@ def _raise(exc: Exception) -> Any:
 
 
 from ..dynamic_parameters import SYSTEM_DYNAMIC_PARAMETERS
+from ..prompt_os import (
+    assemble_memory_conflict_messages,
+    assemble_memory_repair_messages,
+    assemble_memory_rerank_messages,
+)
 
 DEFAULT_MEMORY_PARAMETERS: dict[str, float] = SYSTEM_DYNAMIC_PARAMETERS
 
@@ -1173,26 +1178,11 @@ class MemoryStore:
             f"- ID: {recall.item.id} | Content: {recall.item.content[:500]}"
             for recall in candidates[:30]
         )
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a memory retrieval relevance judge. "
-                    "Given a query and goal, rank the following memory items by semantic relevance."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Query: {query}\n"
-                    f"Goal: {goal or 'general recall'}\n\n"
-                    f"Memory items:\n{items_text}\n\n"
-                    "Return a JSON object with a \"ranked\" array of objects, "
-                    "each having \"id\" (item ID) and \"score\" (float 0.0-1.0 where 1.0 is most relevant). "
-                    "Only include items that have ANY relevance. Omit completely irrelevant items."
-                ),
-            },
-        ]
+        messages = assemble_memory_rerank_messages(
+            query=query,
+            goal=goal,
+            candidates_text=items_text,
+        )
         output_schema = {
             "name": "memory_rerank",
             "strict": False,
@@ -1299,27 +1289,10 @@ class MemoryStore:
         item_b: MemoryItem,
     ) -> MemoryConflict | None:
         """Ask LLM whether two memory items semantically contradict each other."""
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a knowledge consistency auditor. "
-                    "Analyze two memory items and determine if they contradict each other."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Item A (ID: {item_a.id}):\n{item_a.content}\n\n"
-                    f"Item B (ID: {item_b.id}):\n{item_b.content}\n\n"
-                    "Return a JSON object with:\n"
-                    '- "contradicts": boolean (true if they semantically contradict)\n'
-                    '- "relation": string ("contradicts", "supersedes", "consistent", "overlapping")\n'
-                    '- "explanation": string (brief reason)\n'
-                    '- "superseded_id": string (ID of the item that should be superseded, empty if N/A)'
-                ),
-            },
-        ]
+        messages = assemble_memory_conflict_messages(
+            item_a_text=f"ID: {item_a.id}\n{item_a.content}",
+            item_b_text=f"ID: {item_b.id}\n{item_b.content}",
+        )
         output_schema = {
             "name": "conflict_analysis",
             "strict": False,
@@ -1411,34 +1384,17 @@ class MemoryStore:
         analyze why the memory was incorrect and produce a corrected version.
         Returns the new repaired item, or None if retirement is appropriate.
         """
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a memory repair agent. A memory item has been penalized "
-                    "and marked stale due to poor performance. Analyze why it might be "
-                    "incorrect or misleading, and produce a corrected version."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Stale item:\n"
-                    f"- ID: {item.id}\n"
-                    f"- Content: {item.content}\n"
-                    f"- Type: {item.type}\n"
-                    f"- Scope: {item.scope}\n"
-                    f"- Confidence was: {item.confidence}\n"
-                    f"- Reason for staleness: {reason}\n"
-                    f"- Trace context: {trace_context or 'none'}\n\n"
-                    "Return a JSON object with:\n"
-                    '- "should_repair": boolean (false if the item should simply be retired)\n'
-                    '- "corrected_content": string (the improved memory content)\n'
-                    '- "correction_reason": string (why the correction was made)\n'
-                    '- "confidence": number (suggested confidence 0.0-1.0 for the repaired item)'
-                ),
-            },
-        ]
+        messages = assemble_memory_repair_messages(
+            stale_item_text=(
+                f"- ID: {item.id}\n"
+                f"- Content: {item.content}\n"
+                f"- Type: {item.type}\n"
+                f"- Scope: {item.scope}\n"
+                f"- Confidence was: {item.confidence}\n"
+                f"- Reason for staleness: {reason}\n"
+                f"- Trace context: {trace_context or 'none'}"
+            ),
+        )
         output_schema = {
             "name": "memory_repair",
             "strict": False,

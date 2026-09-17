@@ -17,7 +17,7 @@ import uuid
 
 from .db import connect
 from .paths import db_paths
-from .provider import ChatMessage
+from .prompt_os import assemble_llm_judge_messages
 from .schema import Column, Table, assert_schema_exact
 
 logger = logging.getLogger("navi.llm_judge")
@@ -71,32 +71,6 @@ class LLMJudgeEvaluation:
             "followup_feedback": self.followup_feedback,
             "created_at": self.created_at,
         }
-
-
-LLM_JUDGE_SYSTEM_PROMPT = """You are an expert meta-cognitive evaluator and objective reward critic for an autonomous AI agent.
-Your mission is to evaluate the interaction quality and user satisfaction entirely through deep semantic reasoning.
-
-Evaluation Principles:
-- Analyze the semantic meaning, intent alignment, pragmatic satisfaction, and emotional subtext of the user.
-- If the user provides a follow-up response, examine whether it confirms success, expresses gratitude/praise, or reveals a correction, misunderstanding, complaint, or bug.
-- Do NOT use keyword matching or brittle rules. Reason about the full contextual meaning of the exchange.
-- Scalar reward MUST be a float strictly between -1.0 and +1.0:
-    +0.80 to +1.00: Outstanding success, user delighted, or explicit high praise.
-    +0.20 to +0.79: Standard successful execution, task completed accurately.
-    -0.19 to +0.19: Neutral continuation, clarifying query, or minor ambiguity.
-    -0.50 to -0.20: User pointed out a mistake, inaccurate answer, missing constraint, or needed correction.
-    -1.00 to -0.51: Severe failure, dangerous hallucination, broken contract, data loss, or user strongly frustrated.
-- Verdict must be one of: ["positive_reinforcement", "neutral_continuation", "correction_needed", "critical_failure"].
-- Failure domain must be one of: ["none", "planner_or_parser", "safeguard_policy", "capability_failure", "loop_no_progress", "checker_blocked", "misunderstanding"].
-
-Respond ONLY with a single valid JSON object with keys:
-{
-  "reward": float,
-  "verdict": str,
-  "failure_domain": str,
-  "confidence": float,
-  "reasoning": str
-}"""
 
 
 def _extract_judge_json(text: str) -> dict[str, Any]:
@@ -178,21 +152,12 @@ class LLMJudge:
                 logger.warning("LLM judge could not instantiate provider: %s", exc)
                 return None
 
-        user_content_parts = [
-            f"=== User Request ===\n{user_prompt}\n",
-            f"=== Assistant Response ===\n{assistant_response}\n",
-        ]
-        if followup_feedback:
-            user_content_parts.append(f"=== User Follow-up Feedback ===\n{followup_feedback}\n")
-        if events_summary:
-            user_content_parts.append(f"=== Tool Execution Context ===\n{events_summary}\n")
-        user_content_parts.append("Evaluate this interaction semantically and output JSON:")
-
-        messages = [
-            ChatMessage(role="system", content=LLM_JUDGE_SYSTEM_PROMPT),
-            ChatMessage(role="user", content="\n".join(user_content_parts)),
-        ]
-
+        messages = assemble_llm_judge_messages(
+            user_prompt=user_prompt,
+            assistant_response=assistant_response,
+            followup_feedback=followup_feedback,
+            events_summary=events_summary,
+        )
         raw_output = ""
         try:
             raw_output = await used_provider.complete_for("evaluator", messages)

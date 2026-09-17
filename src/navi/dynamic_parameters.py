@@ -54,6 +54,7 @@ SYSTEM_DYNAMIC_PARAMETERS: dict[str, float] = {
 
     # Lifecycle and transaction parameters
     "saga_grace_seconds": 60.0,
+    "saga_lease_timeout_turn": 120.0,
     "detached_recovery_grace_seconds": 90.0,
     "effect_lease_seconds": 900.0,
     "watchdog_heartbeat_timeout_seconds": 120.0,
@@ -205,18 +206,23 @@ class DynamicParameterRegistry:
         self._cache: dict[str, float] = {}
         self._last_loaded_at: float = 0.0
         self._cache_ttl_seconds: float = 5.0
+        self._seeded = False
 
     def _sync(self) -> None:
         now = time.time()
-        if now - self._last_loaded_at < self._cache_ttl_seconds and self._cache:
+        if self._seeded and now - self._last_loaded_at < self._cache_ttl_seconds and self._cache:
             return
-        for name, default_val in SYSTEM_DYNAMIC_PARAMETERS.items():
-            self.provider.set_parameter_if_absent(
-                name,
-                default_val,
-                updated_at=now,
-                metadata={"reason": "system_default_initialization"},
-            )
+        if not self._seeded:
+            # Seed defaults once per registry instance: replaying the full
+            # sweep on every read opened one SQLite connection per parameter.
+            for name, default_val in SYSTEM_DYNAMIC_PARAMETERS.items():
+                self.provider.set_parameter_if_absent(
+                    name,
+                    default_val,
+                    updated_at=now,
+                    metadata={"reason": "system_default_initialization"},
+                )
+            self._seeded = True
         persisted = self.provider.list_parameters()
         self._cache = {name: val for name, (val, _, _) in persisted.items()}
         self._last_loaded_at = now
@@ -379,3 +385,37 @@ class DynamicParameterRegistry:
             }
             for name, (val, updated_at, meta) in entries.items()
         }
+
+
+_AMBIENT_HOME: Path | None = None
+_AMBIENT_REGISTRY: DynamicParameterRegistry | None = None
+
+
+def dynamic_parameter(name: str, default: float, *, home: Path | None = None) -> float:
+    """Read a dynamic parameter through the single runtime parameter plane.
+
+    Runtime code reads every tunable through this accessor so that values
+    persisted by the registry (self-evolution drift, rollback, manual set)
+    take effect without a process restart. The ambient registry is cached
+    per process and per home; callers that already hold a home pass it
+    explicitly.
+    """
+    global _AMBIENT_HOME, _AMBIENT_REGISTRY
+    resolved = home
+    if resolved is None:
+        resolved = _AMBIENT_HOME
+    if resolved is None:
+        from .paths import ensure_home
+
+        resolved = ensure_home()
+        _AMBIENT_HOME = resolved
+    if _AMBIENT_REGISTRY is None or _AMBIENT_REGISTRY.home != resolved:
+        _AMBIENT_REGISTRY = DynamicParameterRegistry(resolved)
+    return _AMBIENT_REGISTRY.get(name, default)
+
+
+def reset_ambient_registry() -> None:
+    """Drop the process-wide registry (used by tests that swap homes)."""
+    global _AMBIENT_HOME, _AMBIENT_REGISTRY
+    _AMBIENT_HOME = None
+    _AMBIENT_REGISTRY = None

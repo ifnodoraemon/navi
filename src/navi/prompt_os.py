@@ -507,6 +507,173 @@ def assemble_goal_event_compaction_messages(lines: Iterable[str]) -> list[ChatMe
     return [ChatMessage("system", system.render()), ChatMessage("user", user.render())]
 
 
+def assemble_llm_judge_messages(
+    *,
+    user_prompt: str,
+    assistant_response: str,
+    followup_feedback: str = "",
+    events_summary: str = "",
+) -> list[ChatMessage]:
+    """Build the semantic judge conversation with untrusted turn data as data."""
+    blocks: list[PromptBlock] = [
+        PromptBlock(
+            "USER REQUEST",
+            "turn_input",
+            "judge.user_prompt",
+            user_prompt,
+            trusted=False,
+            mutable=True,
+        ),
+        PromptBlock(
+            "ASSISTANT RESPONSE",
+            "turn_input",
+            "judge.assistant_response",
+            assistant_response,
+            trusted=False,
+            mutable=True,
+        ),
+    ]
+    if followup_feedback.strip():
+        blocks.append(
+            PromptBlock(
+                "USER FOLLOW-UP FEEDBACK",
+                "turn_input",
+                "judge.followup_feedback",
+                followup_feedback.strip(),
+                trusted=False,
+                mutable=True,
+            )
+        )
+    if events_summary.strip():
+        blocks.append(
+            PromptBlock(
+                "TOOL EXECUTION CONTEXT",
+                "turn_input",
+                "judge.events_summary",
+                events_summary.strip(),
+                trusted=False,
+                mutable=True,
+            )
+        )
+    blocks.append(
+        PromptBlock(
+            "EVALUATION INSTRUCTION",
+            "turn_input",
+            "prompt_specs.llm_judge.instruction",
+            "Evaluate this interaction semantically and respond only with the JSON object.",
+        )
+    )
+    system = PromptAssembly("llm_judge_system", _prompt_spec_blocks("llm_judge_messages"))
+    user = PromptAssembly("llm_judge_input", tuple(blocks))
+    return [ChatMessage("system", system.render()), ChatMessage("user", user.render())]
+
+
+def assemble_memory_rerank_messages(
+    *, query: str, goal: str, candidates_text: str
+) -> list[ChatMessage]:
+    """Build the memory rerank conversation; recall data is untrusted."""
+    blocks = [
+        PromptBlock(
+            "RECALL QUERY",
+            "turn_input",
+            "memory.recall.query",
+            query,
+            trusted=False,
+            mutable=True,
+        ),
+        PromptBlock(
+            "RECALL GOAL",
+            "turn_input",
+            "memory.recall.goal",
+            goal or "general recall",
+            trusted=False,
+            mutable=True,
+        ),
+        PromptBlock(
+            "MEMORY CANDIDATES",
+            "turn_input",
+            "memory.recall.candidates",
+            candidates_text,
+            trusted=False,
+            mutable=True,
+        ),
+        PromptBlock(
+            "RERANK INSTRUCTION",
+            "turn_input",
+            "prompt_specs.memory_rerank.instruction",
+            "Return a JSON object with a \"ranked\" array of objects, "
+            "each having \"id\" (item ID) and \"score\" (float 0.0-1.0 where 1.0 is most "
+            "relevant). Only include items that have ANY relevance. Omit completely "
+            "irrelevant items.",
+        ),
+    ]
+    system = PromptAssembly("memory_rerank_system", _prompt_spec_blocks("memory_rerank_messages"))
+    user = PromptAssembly("memory_rerank_input", tuple(blocks))
+    return [ChatMessage("system", system.render()), ChatMessage("user", user.render())]
+
+
+def assemble_memory_conflict_messages(*, item_a_text: str, item_b_text: str) -> list[ChatMessage]:
+    """Build the conflict audit conversation; item content is untrusted."""
+    blocks = [
+        PromptBlock(
+            "MEMORY ITEM A",
+            "turn_input",
+            "memory.audit.item_a",
+            item_a_text,
+            trusted=False,
+            mutable=True,
+        ),
+        PromptBlock(
+            "MEMORY ITEM B",
+            "turn_input",
+            "memory.audit.item_b",
+            item_b_text,
+            trusted=False,
+            mutable=True,
+        ),
+        PromptBlock(
+            "AUDIT INSTRUCTION",
+            "turn_input",
+            "prompt_specs.memory_conflict.instruction",
+            "Return a JSON object with:\n"
+            '- "contradicts": boolean (true if they semantically contradict)\n'
+            '- "relation": string ("contradicts", "supersedes", "consistent", "overlapping")\n'
+            '- "explanation": string (brief reason)\n'
+            '- "superseded_id": string (ID of the item that should be superseded, empty if N/A)',
+        ),
+    ]
+    system = PromptAssembly("memory_conflict_system", _prompt_spec_blocks("memory_conflict_messages"))
+    user = PromptAssembly("memory_conflict_input", tuple(blocks))
+    return [ChatMessage("system", system.render()), ChatMessage("user", user.render())]
+
+
+def assemble_memory_repair_messages(*, stale_item_text: str) -> list[ChatMessage]:
+    """Build the stale-item repair conversation; item data is untrusted."""
+    blocks = [
+        PromptBlock(
+            "STALE ITEM",
+            "turn_input",
+            "memory.repair.stale_item",
+            stale_item_text,
+            trusted=False,
+            mutable=True,
+        ),
+        PromptBlock(
+            "REPAIR INSTRUCTION",
+            "turn_input",
+            "prompt_specs.memory_repair.instruction",
+            "Return a JSON object with:\n"
+            '- "should_repair": boolean (false if the item should simply be retired)\n'
+            '- "corrected_content": string (the improved memory content)\n'
+            '- "correction_reason": string (why the correction was made)\n'
+            '- "confidence": number (suggested confidence 0.0-1.0 for the repaired item)',
+        ),
+    ]
+    system = PromptAssembly("memory_repair_system", _prompt_spec_blocks("memory_repair_messages"))
+    user = PromptAssembly("memory_repair_input", tuple(blocks))
+    return [ChatMessage("system", system.render()), ChatMessage("user", user.render())]
+
+
 def _iterable_prompt_values(values: object) -> list[object]:
     if isinstance(values, (list, tuple, set, frozenset)):
         return list(values)

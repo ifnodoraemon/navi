@@ -823,7 +823,14 @@ async def test_typing_failures_are_nonfatal_but_traceable(tmp_path: Path) -> Non
         for line in (tmp_path / "weixin" / "events.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     typing_errors = [event for event in events if event["event"] == "typing.error"]
-    assert [event["status"] for event in typing_errors] == [TYPING_START, TYPING_STOP]
+    # The heartbeat tolerates up to 3 consecutive send failures before
+    # giving up, then attempts one final TYPING_STOP which also fails.
+    assert [event["status"] for event in typing_errors] == [
+        TYPING_START,
+        TYPING_START,
+        TYPING_START,
+        TYPING_STOP,
+    ]
     assert all("RuntimeError: typing unavailable" in event["error"] for event in typing_errors)
 
 
@@ -902,7 +909,7 @@ async def test_service_executes_structured_delivery_from_original_path(tmp_path:
     client = CaptureWeixinClient()
     service = WeixinService(
         home=tmp_path,
-        config=WeixinConfig(),
+        config=WeixinConfig(dm_policy="open"),
         runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
         project_dir=tmp_path,
         client=client,
@@ -945,7 +952,7 @@ async def test_transient_caption_failure_does_not_skip_durable_file_delivery(tmp
     client = TransientTextFailingWeixinClient()
     service = WeixinService(
         home=tmp_path,
-        config=WeixinConfig(),
+        config=WeixinConfig(dm_policy="open"),
         runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
         project_dir=tmp_path,
         client=client,
@@ -1002,7 +1009,7 @@ async def test_media_only_update_synthesizes_intent_text(tmp_path: Path):
     client = CaptureWeixinClient()
     service = WeixinService(
         home=tmp_path,
-        config=WeixinConfig(),
+        config=WeixinConfig(dm_policy="open"),
         runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
         project_dir=tmp_path,
         client=client,
@@ -1041,7 +1048,7 @@ async def test_service_records_empty_runtime_response_as_failure(tmp_path: Path)
     client = CaptureWeixinClient()
     service = WeixinService(
         home=tmp_path,
-        config=WeixinConfig(),
+        config=WeixinConfig(dm_policy="open"),
         runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
         project_dir=tmp_path,
         client=client,
@@ -1091,7 +1098,7 @@ async def test_service_propagates_ingress_failure(tmp_path: Path):
 
     service = WeixinService(
         home=tmp_path,
-        config=WeixinConfig(),
+        config=WeixinConfig(dm_policy="open"),
         runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
         project_dir=tmp_path,
         client=CaptureWeixinClient(),
@@ -1611,7 +1618,7 @@ async def test_realtime_file_delivery_records_success_only_after_transport(
     client = CaptureWeixinClient()
     service = WeixinService(
         home=tmp_path,
-        config=WeixinConfig(),
+        config=WeixinConfig(dm_policy="open"),
         runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
         project_dir=tmp_path,
         client=client,
@@ -1688,7 +1695,7 @@ async def test_bare_approval_delivery_closes_original_and_transport_loops(
     client = CaptureWeixinClient()
     service = WeixinService(
         home=tmp_path,
-        config=WeixinConfig(),
+        config=WeixinConfig(dm_policy="open"),
         runtime=runtime,
         project_dir=tmp_path,
         client=client,
@@ -1766,7 +1773,7 @@ async def test_realtime_file_delivery_failure_does_not_record_success(
     )
     service = WeixinService(
         home=tmp_path,
-        config=WeixinConfig(),
+        config=WeixinConfig(dm_policy="open"),
         runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
         project_dir=tmp_path,
         client=FailingFileWeixinClient(),
@@ -1828,7 +1835,7 @@ async def test_service_deduplicates_message_id_across_instances(tmp_path: Path):
     first_client = CaptureWeixinClient()
     first = WeixinService(
         home=tmp_path,
-        config=WeixinConfig(),
+        config=WeixinConfig(dm_policy="open"),
         runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
         project_dir=tmp_path,
         client=first_client,
@@ -1838,7 +1845,7 @@ async def test_service_deduplicates_message_id_across_instances(tmp_path: Path):
     second_client = CaptureWeixinClient()
     second = WeixinService(
         home=tmp_path,
-        config=WeixinConfig(),
+        config=WeixinConfig(dm_policy="open"),
         runtime=AgentRuntime(home=tmp_path, provider=NoModelCalls()),
         project_dir=tmp_path,
         client=second_client,
