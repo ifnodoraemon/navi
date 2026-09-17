@@ -574,4 +574,51 @@ def test_verify_process_integrity_memory_activation(tmp_path: Path):
     assert not errs_proven
 
 
+def test_verify_process_integrity_fails_closed_without_own_trace(tmp_path: Path):
+    """Tool expectations must never be satisfied by unrelated traces."""
+    home = tmp_path / "home"
+    ts = TraceStore(home)
+    # A different journey executed the required tool in an unrelated trace.
+    ts.add_event(
+        trace_id="unrelated-trace",
+        phase="test",
+        tool="file.write",
+        ok=True,
+    )
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    errs_require = _verify_process_integrity(
+        "step[0]",
+        {"require_tools_all": ["file.write"]},
+        project_dir=project_dir,
+        home=home,
+        trace_id="",
+        pre_hashes={},
+    )
+    assert any("PROCESS_INTEGRITY_UNVERIFIABLE" in e for e in errs_require)
+    assert any("PROCESS_MISSING_TOOL: required tool 'file.write'" in e for e in errs_require)
+
+    errs_prohibit = _verify_process_integrity(
+        "step[0]",
+        {"prohibit_tools": ["file.delete"]},
+        project_dir=project_dir,
+        home=home,
+        trace_id="",
+        pre_hashes={},
+    )
+    assert any("PROCESS_INTEGRITY_UNVERIFIABLE" in e for e in errs_prohibit)
+
+    errs_memory = _verify_process_integrity(
+        "step[0]",
+        {"require_memory_activation": True},
+        project_dir=project_dir,
+        home=home,
+        trace_id="",
+        pre_hashes={},
+    )
+    assert any("PROCESS_INTEGRITY_UNVERIFIABLE" in e for e in errs_memory)
+
+
 

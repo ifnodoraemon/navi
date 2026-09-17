@@ -440,12 +440,25 @@ def _verify_process_integrity(
             ts = TraceStore(home)
             if trace_id:
                 trace_events = ts.list_events(trace_id)
-            if not trace_events:
-                for tid in ts.list_trace_ids(limit=50):
-                    trace_events.extend(ts.list_events(tid))
         except Exception:
             trace_events = []
     executed_tools = {ev.tool for ev in trace_events if getattr(ev, "tool", None) and getattr(ev, "ok", False)}
+
+    has_process_expectations = bool(
+        _as_string_list(expect.get("require_tools_all"))
+        or _as_string_list(expect.get("require_tools_any"))
+        or _as_string_list(expect.get("prohibit_tools"))
+        or expect.get("require_memory_activation")
+    )
+    if has_process_expectations and not trace_events:
+        # Fail closed: process integrity cannot be proven without the step's
+        # own trace events. Crediting events from unrelated traces would let
+        # history from other runs satisfy (or violate) this step's contract.
+        errors.append(
+            f"{prefix}: PROCESS_INTEGRITY_UNVERIFIABLE: "
+            f"no trace events for this step (trace_id={trace_id!r}); "
+            "refusing to credit unrelated traces"
+        )
 
     for req_tool in _as_string_list(expect.get("require_tools_all")):
         if req_tool not in executed_tools:
