@@ -17,7 +17,6 @@ from navi.acceptance import (
     _loop_protocol,
     _mismatch_error,
     _reconcile_terminal_resolution,
-    _report,
     _report_marker,
     _run_id_from_turn,
     _safe_str_attr,
@@ -316,7 +315,6 @@ async def test_run_product_acceptance_terminal_success(tmp_path: Path):
     from unittest.mock import MagicMock, patch
     from navi.acceptance import run_product_acceptance
     from navi.runs import RunStore
-    from navi.goals import GoalStore
 
     ws = tmp_path / "ws"
     ws.mkdir()

@@ -2,13 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import time
 
 from navi.evolution_targets import EvolutionTargetAdapterRegistry
-from navi.memory.models import MemoryItem
 from navi.memory.provider import SQLiteMemoryProvider
 from navi.memory.store import DEFAULT_MEMORY_PARAMETERS, MemoryStore
-from navi.core_tools.memory import _memory_parameters, _memory_record_activation
+from navi.core_tools.memory import _memory_parameters
 
 
 def test_dynamic_parameters_default_initialization(tmp_path: Path) -> None:
@@ -54,7 +52,6 @@ def test_dynamic_hebbian_plasticity_on_activation(tmp_path: Path) -> None:
     recalls = store.recall(query, limit=5)
     assert any(r.item.id == item.id for r in recalls)
 
-    initial_seq = store.get_parameter("cue_weight_sequence")
     # Activate with the query
     store.record_activation(
         item.id,
@@ -127,7 +124,7 @@ def test_evolution_target_memory_parameter(tmp_path: Path) -> None:
 
 
 def test_dynamic_parameter_registry_standalone(tmp_path: Path) -> None:
-    from navi.dynamic_parameters import DynamicParameterRegistry, SYSTEM_DYNAMIC_PARAMETERS
+    from navi.dynamic_parameters import DynamicParameterRegistry
 
     registry = DynamicParameterRegistry(tmp_path)
     # Default lookup

@@ -1,7 +1,6 @@
 """Tests for LLM Meta-Cognitive Judge and RLHF/RLAIF Evaluator."""
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -15,7 +14,7 @@ from navi.llm_judge import (
 from navi.loop import TraceFailureDomain
 from navi.replay_buffer import ExperienceReplayBuffer
 from navi.trace import TraceStore
-from navi.turn_lifecycle import AgentTurnResult, TurnLifecycleMixin
+from navi.turn_lifecycle import TurnLifecycleMixin
 
 
 class DummyProvider:

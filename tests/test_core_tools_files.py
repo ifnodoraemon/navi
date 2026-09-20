@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from navi.core_tools.files import (
-    _CheckpointStore,
     _checkpoint_store,
     _file_read,
     _file_write,

@@ -184,12 +184,15 @@ class Harness:
                     os.close(environment_fd)
             stdout_text, stderr_text = process.communicate(timeout=command.timeout.seconds)
         except subprocess.TimeoutExpired as exc:
+            exc_stdout = exc.stdout
+            exc_stderr = exc.stderr
+
             def _drain_process() -> tuple[str, str]:
                 _kill_process_tree(process)
                 return process.communicate()
 
             def _drain_exc() -> tuple[str, str]:
-                return _timeout_text(exc.stdout), _timeout_text(exc.stderr)
+                return _timeout_text(exc_stdout), _timeout_text(exc_stderr)
 
             drain_handlers = {
                 True: _drain_process,

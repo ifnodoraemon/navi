@@ -15,7 +15,7 @@ import uuid
 
 from .db import connect
 from .dynamic_parameters import DynamicParameterRegistry
-from .loop import TraceFailureDomain, TraceOutcome
+from .loop import TraceFailureDomain
 from .paths import db_paths
 from .schema import Column, Table, assert_schema_exact
 
