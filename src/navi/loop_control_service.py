@@ -189,6 +189,23 @@ class LoopControlService:
         self.loop_runs = LoopRunStore(home)
         self.lifecycle_sagas = LifecycleSagaStore(home)
 
+    def _enqueue_case_precipitation(self, goal: Any) -> None:
+        """Queue a case-memory job for a converged goal; never block convergence."""
+        import logging
+
+        from .memory.store import MemoryStore
+
+        logger = logging.getLogger("navi.loop_control")
+        try:
+            MemoryStore(self.home).enqueue_case_precipitation(
+                goal_id=goal.id,
+                source=str(getattr(goal, "source", "") or "goal"),
+                peer_id=str(getattr(goal, "peer_id", "") or ""),
+                sender_id=str(getattr(goal, "sender_id", "") or ""),
+            )
+        except Exception as exc:
+            logger.warning("case precipitation enqueue failed for goal %s: %s", goal.id, exc)
+
     def _run_for_goal(self, goal: Any) -> Any:
         if goal and getattr(goal, "run_id", None):
             return self.runs.get(goal.run_id)
@@ -682,6 +699,8 @@ class LoopControlService:
             goal_evidence=merged_evidence,
         )
         updated_run, goal = self.lifecycle_sagas.apply(saga)
+        if graph_result.terminal_state == str(LoopTerminalState.CONVERGED):
+            self._enqueue_case_precipitation(goal)
         if background_delivery_pending:
             self.goals.record_result_delivery_outbox(
                 run=updated_run,

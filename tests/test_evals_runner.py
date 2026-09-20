@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -37,8 +36,6 @@ from navi.weixin.evals import (
     _match_expectation as _match_weixin_expectation,
     load_journey_eval_dataset as load_weixin_journey_eval_dataset,
 )
-from navi.weixin.service import WeixinService
-from navi.weixin.config import WeixinConfig
 
 
 def test_evals_helpers():

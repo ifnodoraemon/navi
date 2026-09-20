@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from navi.dynamic_parameters import DynamicParameterRegistry
 from navi.prompting import PromptLayerStore
 from navi.self_play import (
-    SELF_PLAY_TRIALS_TABLE,
     SelfPlayArena,
     ShadowTrialSpec,
 )
@@ -397,3 +397,65 @@ def test_evidence_uses_digest_not_full_content(tmp_path: Path) -> None:
     assert digest["head"] == (current + "0123456789")[:200]
 
 
+
+
+def test_execute_shadow_trial_memory_gate_blocks_contamination(tmp_path: Path) -> None:
+    arena = SelfPlayArena(tmp_path)
+    param_reg = DynamicParameterRegistry(tmp_path)
+    initial = param_reg.get("tf_max_extra_boost")
+
+    spec = ShadowTrialSpec(
+        trial_id="trial_memory_gate_block",
+        target_type="dynamic_parameter",
+        target_id="tf_max_extra_boost",
+        baseline_value=initial,
+        candidate_value=9643190.0,
+        hypothesis="explore_huge_tf_boost",
+        eval_case_ids=("memory.regression.gate", "runtime.parameter.valid"),
+    )
+
+    result = arena.execute_shadow_trial(spec, auto_promote=True)
+
+    assert result.passed
+    assert not result.promoted
+    assert result.evidence["promotion_blocked_reason"] == "memory_regression_gate_failed"
+    assert result.evidence["memory_gate"]["blocked"] is True
+    assert param_reg.get("tf_max_extra_boost", reload=True) == initial
+
+
+def test_execute_shadow_trial_memory_gate_allows_benign_candidate(tmp_path: Path) -> None:
+    arena = SelfPlayArena(tmp_path)
+    param_reg = DynamicParameterRegistry(tmp_path)
+    initial = param_reg.get("cue_weight_coverage")
+
+    spec = ShadowTrialSpec(
+        trial_id="trial_memory_gate_pass",
+        target_type="dynamic_parameter",
+        target_id="cue_weight_coverage",
+        baseline_value=initial,
+        candidate_value=0.65,
+        hypothesis="explore_higher_coverage_gated",
+        eval_case_ids=("memory.regression.gate", "runtime.parameter.valid"),
+    )
+
+    result = arena.execute_shadow_trial(spec, auto_promote=True)
+
+    assert result.passed
+    assert result.promoted
+    assert result.evidence["memory_gate"]["blocked"] is False
+    assert param_reg.get("cue_weight_coverage", reload=True) == 0.65
+
+
+def test_generate_parameter_perturbations_marks_memory_params_behavioral(tmp_path: Path) -> None:
+    from navi.memory_eval import MEMORY_PARAMETER_SET
+
+    arena = SelfPlayArena(tmp_path)
+    specs = arena.generate_parameter_perturbations(limit=60)
+    assert specs
+    memory_specs = [spec for spec in specs if spec.target_id in MEMORY_PARAMETER_SET]
+    assert memory_specs
+    for spec in memory_specs:
+        assert "memory.regression.gate" in spec.eval_case_ids
+    for spec in specs:
+        if spec.target_id not in MEMORY_PARAMETER_SET:
+            assert spec.eval_case_ids == ("runtime.parameter.valid",)

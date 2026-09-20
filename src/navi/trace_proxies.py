@@ -90,6 +90,36 @@ class _BaseTracingProxy:
                 return dict(usage)
         return {}
 
+    def _emit_memory_recall(self, spec: LoopSpec, state: LoopRunState) -> None:
+        """Record the planner-intake memory recall decision trace.
+
+        ok stays True regardless of hit count: a recall miss is a retrieval
+        outcome, not a runtime failure, and must not taint trace evaluation.
+        """
+        recall_trace = getattr(self.delegate, "last_memory_recall_trace", None)
+        if not recall_trace:
+            return
+        self._emit(
+            state=state,
+            phase=TracePhase.MEMORY_RECALL,
+            model_role="runtime",
+            tool="memory.recall",
+            ok=True,
+            input_data={
+                "query": recall_trace.get("query", spec.goal.objective),
+                "limit": recall_trace.get("limit"),
+            },
+            output_data={
+                "facts": {
+                    "policy": recall_trace.get("policy", "memory_recall_trace_v1"),
+                    "recall_trace": {
+                        "stages": recall_trace.get("stages", []),
+                        "duration_ms": recall_trace.get("duration_ms"),
+                    },
+                }
+            },
+        )
+
 
 class TracingPlannerPortProxy(_BaseTracingProxy):
     async def plan(
@@ -105,6 +135,7 @@ class TracingPlannerPortProxy(_BaseTracingProxy):
             planned_step = await self.delegate.plan(
                 spec, state, workspace=workspace, evidence=evidence
             )
+            self._emit_memory_recall(spec, state)
             usage_data = self._extract_usage("planner")
             output_data = planned_step.to_dict()
             output_data["usage"] = usage_data

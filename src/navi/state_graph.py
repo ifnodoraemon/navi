@@ -1206,10 +1206,13 @@ def _render_planner_memory_context(recalls: list[Any]) -> str:
     ]
     for recall in recalls:
         item = recall.item
+        display = item.summary
+        if not display:
+            display = truncate_middle(item.content, _planner_memory_item_max_chars())
         lines.append(
             f"- [id={item.id} type={item.type} scope={item.scope} "
             f"confidence={item.confidence:.2f} score={recall.score:.4f}] "
-            f"{truncate_middle(item.content, _planner_memory_item_max_chars())}"
+            f"{display}"
         )
         if recall.reasons:
             lines.append(f"  reasons: {', '.join(recall.reasons)}")
@@ -1308,6 +1311,10 @@ class ModelCapabilityPlannerPort:
         self.capabilities = capabilities
         self.context = context
         self.planner = ModelSyscallPlanner(runtime.provider)
+        # Last planner-intake memory recall decision trace; consumed by the
+        # tracing proxy so recall observability follows the established port
+        # proxy pattern (no prompt pollution of planner runtime_facts).
+        self.last_memory_recall_trace: dict[str, Any] | None = None
 
     async def plan(
         self,
@@ -1370,6 +1377,7 @@ class ModelCapabilityPlannerPort:
                 },
             }[conversation_builder is not None]
         memory_context = _planner_memory_context(memory=self.runtime.memory, spec=spec)
+        self.last_memory_recall_trace = getattr(self.runtime.memory, "last_recall_trace", None)
 
         syscalls = await self.planner.plan(
             spec.goal.objective,

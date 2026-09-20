@@ -225,6 +225,7 @@ MEMORY_POLICY_SPEC: Any = {
         "semantic",
         "fact",
         "procedural",
+        "case",
         "preference",
         "negative",
         "skill",
@@ -246,6 +247,7 @@ MEMORY_POLICY_SPEC: Any = {
         "fact": 55,
         "hypothesis": 25,
         "episode": 15,
+        "case": 50,
     },
 }
 
@@ -360,6 +362,22 @@ PROMPT_ASSEMBLIES_SPEC: Any = {
                     "the result outbox, not by this notification role. Return the "
                     "structured notify/message decision; an empty or low-value event "
                     "should not be surfaced."
+                ),
+            }
+        ],
+    },
+    "case_precipitation_messages": {
+        "blocks": [
+            {
+                "name": "CASE PRECIPITATOR SYSTEM",
+                "tier": "stable",
+                "source": "prompt_specs.case_precipitation.system",
+                "content": (
+                    "You distill completed goals into reusable task-experience memories. "
+                    "Given the goal objective, the result summary, and checker evidence, write ONE "
+                    "concise case note in the user's language: what the goal was, how it was "
+                    "achieved (approach and key steps), the outcome, and any pitfalls or "
+                    "conditions for reuse. Never invent facts not present in the evidence."
                 ),
             }
         ],

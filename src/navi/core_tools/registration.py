@@ -16,6 +16,7 @@ from .files import (
     _file_write,
     _python_ast_replace_symbol,
 )
+from .hooks import _hooks_list
 from .memory import (
     _memory_conflicts,
     _memory_list,
@@ -23,6 +24,7 @@ from .memory import (
     _memory_recall,
     _memory_record_activation,
 )
+from .provider import _provider_config
 from .shell import _shell_run
 from .skills import _skills_list, _skills_view
 from .tools_list import _tools_list
@@ -258,6 +260,9 @@ def register_core_tools(registry: ToolRegistry, *, home: Path) -> None:
                     "activation_candidate_ids": {
                         "type": "array",
                         "items": {"type": "string"},
+                    },
+                    "recall_trace": {
+                        "type": "object",
                     },
                     "count": {"type": "integer"},
                     "limit": {"type": "integer"},

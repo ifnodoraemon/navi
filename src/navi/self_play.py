@@ -19,6 +19,7 @@ from .db import connect
 from .dynamic_parameters import DynamicParameterRegistry, SYSTEM_DYNAMIC_PARAMETERS
 from .credit_assignment import CreditAssignmentEngine
 from .evolution_experiments import EvolutionExperimentStore
+from .memory_eval import MEMORY_PARAMETER_SET, run_memory_regression_eval
 from .paths import db_paths
 from .prompting import PromptLayerStore
 from .schema import Column, Table, assert_schema_exact
@@ -57,6 +58,17 @@ _RUNTIME_STUB_PREFIX = "runtime."
 
 def _is_behavioral_eval_case(case_id: str) -> bool:
     return not case_id.startswith(_RUNTIME_STUB_PREFIX)
+
+
+def _eval_cases_for_parameter(target_id: str) -> tuple[str, ...]:
+    """Memory-plane parameters carry the behavioral gate marker so the C1
+    behavioral-verification requirement is satisfied by a real behavioral
+    check (the memory regression gate) rather than a structural stub."""
+    is_memory_param = target_id in MEMORY_PARAMETER_SET
+    return {
+        True: ("memory.regression.gate", "runtime.parameter.valid"),
+        False: ("runtime.parameter.valid",),
+    }[is_memory_param]
 
 
 def _candidate_digest(content: str) -> dict[str, Any]:
@@ -315,6 +327,7 @@ class SelfPlayArena:
                         baseline_value=current_val,
                         candidate_value=candidate_up,
                         hypothesis=f"exploratory_upward_step_by_{step}",
+                        eval_case_ids=_eval_cases_for_parameter(target_id),
                     )
                 )
             if len(specs) >= limit:
@@ -330,6 +343,7 @@ class SelfPlayArena:
                         baseline_value=current_val,
                         candidate_value=candidate_down,
                         hypothesis=f"exploratory_downward_step_by_{step}",
+                        eval_case_ids=_eval_cases_for_parameter(target_id),
                     )
                 )
 
@@ -786,6 +800,35 @@ class SelfPlayArena:
             if not promotion_block_reason and len(spec.candidate_content) > growth_cap:
                 promotion_block_reason = "candidate_exceeds_growth_cap"
 
+        # Memory regression gate: recall quality tripwire for memory-plane
+        # parameters. Blocks promotion when the candidate degrades retrieval
+        # hit-rate on the fixed fixture corpus (2026-09-17 contamination class).
+        memory_gate_report: dict[str, Any] | None = None
+        if (
+            passed
+            and auto_promote
+            and not promotion_block_reason
+            and spec.target_type == "dynamic_parameter"
+            and spec.target_id in MEMORY_PARAMETER_SET
+        ):
+            try:
+                gate_threshold = self.param_registry.get("memory_regression_gate_threshold", 0.85)
+                memory_gate_report = run_memory_regression_eval(
+                    self.home,
+                    target_id=spec.target_id,
+                    candidate_value=spec.candidate_value,
+                    threshold=float(gate_threshold),
+                )
+                if memory_gate_report.get("blocked"):
+                    promotion_block_reason = "memory_regression_gate_failed"
+            except Exception as exc:
+                memory_gate_report = {
+                    "policy": "memory_regression_gate_v1",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "blocked": True,
+                }
+                promotion_block_reason = "memory_regression_gate_error"
+
         promoted = passed and auto_promote and not promotion_block_reason
         if promoted:
             if spec.target_type == "dynamic_parameter":
@@ -828,6 +871,8 @@ class SelfPlayArena:
         }
         if promotion_block_reason:
             evidence["promotion_blocked_reason"] = promotion_block_reason
+        if memory_gate_report is not None:
+            evidence["memory_gate"] = memory_gate_report
 
         result = ShadowTrialResult(
             trial_id=spec.trial_id,

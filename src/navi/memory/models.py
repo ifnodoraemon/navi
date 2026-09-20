@@ -54,6 +54,7 @@ class MemoryItem:
     metadata: dict
     reason: str = ""
     provenance: str = ""
+    summary: str = ""
 
 
 @dataclass(frozen=True)

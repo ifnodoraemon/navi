@@ -126,6 +126,25 @@ from ..prompt_os import (
 
 DEFAULT_MEMORY_PARAMETERS: dict[str, float] = SYSTEM_DYNAMIC_PARAMETERS
 
+# L0 summary: a short deterministic digest of long memory content. The L0 is
+# what rerankers and context renderers consume; full content (L2) stays in
+# the store and is loaded on demand via memory.recall facts.
+_L0_SUMMARY_MAX_CHARS = 256
+_L0_SUMMARY_MIN_CONTENT_CHARS = 320
+
+
+def _default_l0_summary(content: str) -> str:
+    """Extractive L0 summary for long content; short content is its own L0."""
+    text = " ".join(content.split())
+    if len(text) <= _L0_SUMMARY_MIN_CONTENT_CHARS:
+        return ""
+    head = text[:_L0_SUMMARY_MAX_CHARS]
+    boundaries = [head.rfind(mark) for mark in ("。", "！", "？", ". ", "! ", "? ", "，")]
+    cut = max(boundaries)
+    if cut < _L0_SUMMARY_MAX_CHARS // 2:
+        return head
+    return head[:cut].strip()
+
 
 class MemoryStore:
     def __init__(
@@ -143,6 +162,7 @@ class MemoryStore:
         self._parameters_initialized = False
         self._parameters_loaded_at = 0.0
         self._recent_recall_queries: dict[str, str] = {}
+        self.last_recall_trace: dict[str, Any] | None = None
         self._registry = registry  # DynamicParameterRegistry or None (unified param surface)
 
     _PARAMETER_CACHE_TTL_SECONDS = 300.0
@@ -281,6 +301,7 @@ class MemoryStore:
         metadata: dict | None = None,
         reason: str = "",
         provenance: str = "",
+        summary: str = "",
     ) -> MemoryItem:
         memory_type = memory_type.strip().lower()
         status = status.strip().lower()
@@ -289,6 +310,7 @@ class MemoryStore:
         resolved_scope = scope.strip() or "global"
         reason = reason.strip()
         provenance = provenance.strip()
+        resolved_summary = summary.strip() or _default_l0_summary(content)
         (memory_type not in MEMORY_TYPES) and _raise(ValueError(f"Unsupported memory type: {memory_type}"))
         (status not in MEMORY_STATUSES) and _raise(ValueError(f"Unsupported memory status: {status}"))
         (not content) and _raise(ValueError("memory content is required"))
@@ -322,6 +344,7 @@ class MemoryStore:
             metadata=metadata or {},
             reason=reason,
             provenance=provenance,
+            summary=resolved_summary,
         )
         # Contradiction links are model-declared metadata; the store persists
         # them without deriving semantic judgments of its own.
@@ -1025,12 +1048,22 @@ class MemoryStore:
         allowed_scopes: set[str] | frozenset[str] | None,
         now: float,
     ) -> list[MemoryRecall]:
+        started = time.perf_counter()
+        trace_stages: list[dict[str, Any]] = []
         fts_multiplier = self.get_parameter("recall_fts_pool_multiplier", 3.0)
         fts_limit = max(1, int(limit * fts_multiplier))
         fts_results = self.provider.search_fts(
             fts_query,
             limit=fts_limit,
             allowed_scopes=allowed_scopes,
+        )
+        trace_stages.append(
+            {
+                "stage": "fts",
+                "pool_limit": fts_limit,
+                "hit_count": len(fts_results),
+                "hit_ids": [item_id for item_id, _rank in fts_results[:12]],
+            }
         )
 
         ranked_candidates: list[tuple[str, float, list[str]]] = []
@@ -1061,6 +1094,14 @@ class MemoryStore:
             has_sim and seen_candidate_ids.add(item.id)
         lexical_candidates.sort(key=lambda item: item[1])
         ranked_candidates.extend(lexical_candidates)
+        trace_stages.append(
+            {
+                "stage": "lexical",
+                "pool_size": len(candidate_items),
+                "candidate_count": len(lexical_candidates),
+                "top_ids": [item_id for item_id, _score, _reasons in lexical_candidates[:12]],
+            }
+        )
 
         # Associative graph neighbors and spreading activation from seeds (FTS or top lexical)
         seeds_for_graph: list[str] = [item_id for item_id, _rank in fts_results] or [
@@ -1080,8 +1121,17 @@ class MemoryStore:
                 False: lambda: (ranked_candidates.append((item_id, 0.0, reasons)), seen_candidate_ids.add(item_id)),
             }
             actions[in_seen]()
+        trace_stages.append(
+            {
+                "stage": "graph",
+                "seed_ids": list(seeds_for_graph[:6]),
+                "neighbor_count": len(graph_neighbors),
+                "neighbor_ids": list(graph_neighbors)[:12],
+            }
+        )
 
         selected: list[MemoryRecall] = []
+        eligible_cut = 0
         for item_id, score, reasons in ranked_candidates:
             recalled_item = self.get_item(item_id)
             eligible = bool(
@@ -1091,6 +1141,8 @@ class MemoryStore:
                 and (not recalled_item.expires_at or recalled_item.expires_at > now)
             )
             take = eligible and (len(selected) < limit)
+            if eligible and not take:
+                eligible_cut += 1
             take and selected.append(
                 MemoryRecall(
                     item=recalled_item,
@@ -1104,7 +1156,25 @@ class MemoryStore:
         conflicts = ()
         if selected:
             conflicts = self.list_conflicts(limit=1000, allowed_scopes=allowed_scopes)
-        return [self._with_conflict_reasons(recall, conflicts) for recall in selected]
+        selected_recalls = [self._with_conflict_reasons(recall, conflicts) for recall in selected]
+        trace_stages.append(
+            {
+                "stage": "select",
+                "selected": [
+                    {"id": recall.item.id, "score": round(recall.score, 4)} for recall in selected_recalls
+                ],
+                "eligible_cut": eligible_cut,
+            }
+        )
+        self.last_recall_trace = {
+            "policy": "memory_recall_trace_v1",
+            "query": query,
+            "goal": goal,
+            "limit": limit,
+            "stages": trace_stages,
+            "duration_ms": round((time.perf_counter() - started) * 1000.0, 2),
+        }
+        return selected_recalls
 
     @staticmethod
     def _merge_graph_reasons(
@@ -1174,10 +1244,13 @@ class MemoryStore:
         Sends candidate items to the LLM and asks it to score each by
         relevance. Falls back to original ordering on any failure.
         """
-        items_text = "\n".join(
-            f"- ID: {recall.item.id} | Content: {recall.item.content[:500]}"
-            for recall in candidates[:30]
-        )
+        items_lines = []
+        for recall in candidates[:30]:
+            display = recall.item.summary
+            if not display:
+                display = recall.item.content[:500]
+            items_lines.append(f"- ID: {recall.item.id} | Content: {display}")
+        items_text = "\n".join(items_lines)
         messages = assemble_memory_rerank_messages(
             query=query,
             goal=goal,
@@ -1484,7 +1557,7 @@ class MemoryStore:
                     job_id,
                     f"reflective_repair:{item_id}",
                     f"repair:{item_id}:{now:.0f}",
-                    f"reflective_repair",
+                    "reflective_repair",
                     now,
                     now,
                 ),
@@ -1697,23 +1770,28 @@ class MemoryStore:
         limit: int = ACTIVE_MEMORY_CONTEXT_LIMIT,
         goal: str = "",
         allowed_scopes: set[str] | frozenset[str] | None = None,
+        recalls: list[MemoryRecall] | None = None,
     ) -> str:
-        recalls = self.recall(
-            query,
-            limit=limit,
-            goal=goal,
-            allowed_scopes=allowed_scopes,
-        )
+        if recalls is None:
+            recalls = self.recall(
+                query,
+                limit=limit,
+                goal=goal,
+                allowed_scopes=allowed_scopes,
+            )
         lines: list[str] = []
         for recall in recalls:
             item = recall.item
             verified = _format_verification_date(item.last_verified_at)
             reasons = ", ".join(recall.reasons)
             reason_line = f"\n  reasons: {reasons}" * int(bool(reasons))
+            display = item.summary
+            if not display:
+                display = item.content
             lines.append(
                 f"- [type={item.type} scope={item.scope} confidence={item.confidence:.2f} "
                 f"score={recall.score:.4f} verified={verified} id={item.id}] "
-                f"{truncate_middle(item.content, ACTIVE_MEMORY_CONTEXT_LIMIT)}"
+                f"{truncate_middle(display, int(self.get_parameter('memory_render_context_max_chars', 256.0)))}"
                 f"{reason_line}"
             )
         return "\n".join(lines)
@@ -2173,15 +2251,163 @@ class MemoryStore:
         return [MemoryConsolidationJob(*row) for row in rows]
 
     async def consolidate_job(self, job: MemoryConsolidationJob, runtime: Any) -> list[MemoryItem]:
-        from ..prompt_os import assemble_memory_consolidation_messages
-        from ..prompting import PromptLayerStore
-        from .scopes import default_memory_scope
+        if job.source == "goal_convergence":
+            return await self._run_case_precipitation(job, runtime)
 
         messages = self.get_messages_for_run(job.session_id, job.run_id, limit=50) or self.get_messages(job.session_id, limit=50)
         if not messages:
             self._finish_consolidation_job(job, status="completed")
             return []
         return await self._run_consolidation(job, runtime, messages)
+
+    def enqueue_case_precipitation(
+        self,
+        *,
+        goal_id: str,
+        source: str,
+        peer_id: str,
+        sender_id: str,
+    ) -> str:
+        """Enqueue a one-shot case-memory job for a converged goal.
+
+        The synthetic (session_id, run_id) pair doubles as the dedupe key:
+        UNIQUE(session_id, run_id) makes case precipitation exactly-once per
+        goal even when the convergence saga replays.
+        """
+        job_id = uuid.uuid4().hex
+        now = time.time()
+        session_key = f"case_precipitation:{goal_id}"
+        run_key = f"case:{goal_id}"
+        with connect(db_paths(self.home).memory) as conn:
+            inserted = conn.execute(
+                """
+                INSERT INTO memory_consolidation_jobs(
+                    id, session_id, run_id, source, peer_id, sender_id, status,
+                    owner, lease_expires_at, attempts, error, created_at, updated_at
+                ) VALUES (?, ?, ?, 'goal_convergence', ?, ?, 'pending', '', 0, 0, '', ?, ?)
+                ON CONFLICT(session_id, run_id) DO NOTHING
+                """,
+                (job_id, session_key, run_key, peer_id, sender_id, now, now),
+            )
+            bool(inserted.rowcount) and _record_job_event(
+                conn,
+                job_id,
+                event="enqueued",
+                from_status="",
+                to_status="pending",
+                reason="goal_converged_case_precipitation",
+                created_at=now,
+            )
+            row = conn.execute(
+                "SELECT id FROM memory_consolidation_jobs WHERE session_id = ? AND run_id = ?",
+                (session_key, run_key),
+            ).fetchone()
+        if row:
+            return str(row[0])
+        return job_id
+
+    async def _run_case_precipitation(
+        self,
+        job: MemoryConsolidationJob,
+        runtime: Any,
+    ) -> list[MemoryItem]:
+        """Distill a converged goal into a reusable case memory item."""
+        from ..prompt_os import assemble_case_precipitation_messages
+
+        goal_id = job.session_id.split(":", 1)[-1]
+        from ..goals import GoalStore
+        from ..runs import RunStore
+
+        goal = GoalStore(self.home).get(goal_id)
+        if goal is None:
+            self._finish_consolidation_job(job, status="completed")
+            return []
+        run = None
+        if getattr(goal, "run_id", None):
+            run = RunStore(self.home).get(goal.run_id)
+        result_summary = str(getattr(run, "result_summary", "") or "")
+        evidence_summary = self._case_evidence_summary(goal_id)
+        output_schema = {
+            "name": "case_precipitation",
+            "strict": False,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string"},
+                    "confidence": {"type": "number"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["content", "confidence", "reason"],
+                "additionalProperties": False,
+            },
+        }
+        response = await runtime.provider.complete_for(
+            "consolidator",
+            assemble_case_precipitation_messages(
+                objective=goal.objective,
+                result_summary=result_summary or "(no result summary recorded)",
+                evidence_summary=evidence_summary or "(no checker evidence recorded)",
+            ),
+            output_schema=output_schema,
+        )
+        parsed = {}
+        if isinstance(response, str):
+            parsed = json_object(response)
+        if not isinstance(response, str):
+            parsed = dict(response or {})
+        content = str(parsed.get("content") or "").strip()
+        if not content:
+            self._finish_consolidation_job(job, status="completed")
+            return []
+        from .scopes import default_memory_scope
+
+        active_scope = default_memory_scope(
+            source=job.source,
+            peer_id=job.peer_id,
+            sender_id=job.sender_id,
+            session_id="",
+            workspace="",
+            home=self.home,
+        )
+        item = self.add_item(
+            memory_type="case",
+            content=content,
+            source=job.source,
+            scope=active_scope,
+            status="proposed",
+            confidence=float(parsed.get("confidence") or 0.6),
+            reason=str(parsed.get("reason") or "goal converged"),
+            provenance=f"case-job:{job.id}:goal:{goal_id}",
+        )
+        from ..evolution import EvolutionLedger
+
+        ledger = EvolutionLedger(self.home)
+        ledger.record(
+            run_id=job.run_id,
+            target_type="memory_item",
+            target_id=item.id,
+            reason="memory_case_precipitated",
+            before="",
+            after=json.dumps(dict(item.__dict__), ensure_ascii=False, sort_keys=True, default=str),
+        )
+        self._finish_consolidation_job(job, status="completed")
+        return [item]
+
+    def _case_evidence_summary(self, goal_id: str) -> str:
+        """Compact checker-evidence digest from the goal's latest loop runs."""
+        from ..loop_runs import LoopRunStore
+
+        states = LoopRunStore(self.home).list_by_goal(goal_id, limit=10)
+        summaries: list[str] = []
+        for state in reversed(states):
+            report = dict(getattr(state, "evidence", {}) or {}).get("checker_report") or {}
+            for check in report.get("checker_results") or []:
+                evidence = dict(check.get("evidence") or {})
+                text = str(evidence.get("evidence_summary") or "").strip()
+                if text:
+                    summaries.append(text)
+        digest = " | ".join(summaries)
+        return digest[:2000]
 
     async def _run_consolidation(
         self,
@@ -2561,6 +2787,7 @@ def _memory_graph_item_data(item: MemoryItem) -> dict[str, Any]:
         "metadata": dict(item.metadata),
         "reason": item.reason,
         "provenance": item.provenance,
+        "summary": item.summary,
         "content": item.content,
         "content_preview": truncate_middle(item.content, 240),
         "placeholder": False,

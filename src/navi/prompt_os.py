@@ -674,6 +674,53 @@ def assemble_memory_repair_messages(*, stale_item_text: str) -> list[ChatMessage
     return [ChatMessage("system", system.render()), ChatMessage("user", user.render())]
 
 
+def assemble_case_precipitation_messages(
+    *,
+    objective: str,
+    result_summary: str,
+    evidence_summary: str,
+) -> list[ChatMessage]:
+    """Build the case-precipitation conversation; run evidence is untrusted."""
+    blocks = [
+        PromptBlock(
+            "GOAL OBJECTIVE",
+            "turn_input",
+            "case.goal.objective",
+            objective,
+            trusted=False,
+            mutable=True,
+        ),
+        PromptBlock(
+            "RESULT SUMMARY",
+            "turn_input",
+            "case.run.result_summary",
+            result_summary,
+            trusted=False,
+            mutable=True,
+        ),
+        PromptBlock(
+            "CHECKER EVIDENCE",
+            "turn_input",
+            "case.run.evidence_summary",
+            evidence_summary,
+            trusted=False,
+            mutable=True,
+        ),
+        PromptBlock(
+            "CASE INSTRUCTION",
+            "turn_input",
+            "prompt_specs.case_precipitation.instruction",
+            "Respond only with a JSON object with keys:\n"
+            '- "content": string (the reusable case note, under 500 characters)\n'
+            '- "confidence": number (0.0-1.0, how reusable this experience is)\n'
+            '- "reason": string (why this case is worth remembering)',
+        ),
+    ]
+    system = PromptAssembly("case_precipitation_system", _prompt_spec_blocks("case_precipitation_messages"))
+    user = PromptAssembly("case_precipitation_input", tuple(blocks))
+    return [ChatMessage("system", system.render()), ChatMessage("user", user.render())]
+
+
 def _iterable_prompt_values(values: object) -> list[object]:
     if isinstance(values, (list, tuple, set, frozenset)):
         return list(values)

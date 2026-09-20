@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import re
-from typing import Protocol
+from typing import Any, Protocol
 
 from ..db import connect, check_schema_version, read_schema_version, write_schema_version
 from ..schema import Column, Table, assert_schema_exact
 from .models import MemoryItem, SessionAlias, StoredMessage
 
-MEMORY_SCHEMA_VERSION = 4
+MEMORY_SCHEMA_VERSION = 5
 
 MESSAGES_TABLE = Table(
     "messages",
@@ -55,6 +54,7 @@ MEMORY_ITEMS_TABLE = Table(
         Column("metadata", "TEXT", nullable=False),
         Column("reason", "TEXT", nullable=False, default="''"),
         Column("provenance", "TEXT", nullable=False, default="''"),
+        Column("summary", "TEXT", nullable=False, default="''"),
     ],
 )
 MEMORY_PARAMETERS_TABLE = Table(
@@ -168,6 +168,7 @@ class SQLiteMemoryProvider:
             conn.execute(SESSION_ALIASES_TABLE.ddl)
             assert_schema_exact(conn, SESSION_ALIASES_TABLE)
             conn.execute(MEMORY_ITEMS_TABLE.ddl)
+            _migrate_memory_items_table(conn)
             assert_schema_exact(conn, MEMORY_ITEMS_TABLE)
             conn.execute(MEMORY_PARAMETERS_TABLE.ddl)
             assert_schema_exact(conn, MEMORY_PARAMETERS_TABLE)
@@ -336,6 +337,7 @@ class SQLiteMemoryProvider:
             metadata=json.loads(row[11]),
             reason=row[12],
             provenance=row[13],
+            summary=row[14],
         )
 
     def _message_from_row(self, row: tuple) -> StoredMessage:
@@ -365,9 +367,9 @@ class SQLiteMemoryProvider:
                 INSERT OR REPLACE INTO memory_items(
                     id, type, status, scope, content, source, confidence,
                     created_at, updated_at, last_verified_at, expires_at, metadata,
-                    reason, provenance
+                    reason, provenance, summary
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item.id,
@@ -384,6 +386,7 @@ class SQLiteMemoryProvider:
                     json.dumps(item.metadata, sort_keys=True),
                     item.reason,
                     item.provenance,
+                    item.summary,
                 ),
             )
 
@@ -418,7 +421,7 @@ class SQLiteMemoryProvider:
                 f"""
                 SELECT id, type, status, scope, content, source, confidence,
                        created_at, updated_at, last_verified_at, expires_at, metadata,
-                       reason, provenance
+                       reason, provenance, summary
                 FROM memory_items
                 {where}
                 ORDER BY updated_at DESC LIMIT ?
@@ -433,7 +436,7 @@ class SQLiteMemoryProvider:
                 """
                 SELECT id, type, status, scope, content, source, confidence,
                        created_at, updated_at, last_verified_at, expires_at, metadata,
-                       reason, provenance
+                       reason, provenance, summary
                 FROM memory_items WHERE id = ?
                 """,
                 (item_id,),
@@ -813,6 +816,14 @@ def _migrate_messages_table(conn) -> None:
         WHERE message_id = ''
         """
     )
+
+
+def _migrate_memory_items_table(conn) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(memory_items)").fetchall()}
+    for column in MEMORY_ITEMS_TABLE.columns:
+        if column.name in existing:
+            continue
+        conn.execute(f"ALTER TABLE memory_items ADD COLUMN {_column_definition_for_alter(column)}")
 
 
 def _column_definition_for_alter(column: Column) -> str:

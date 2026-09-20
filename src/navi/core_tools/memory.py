@@ -22,6 +22,7 @@ def _memory_item_facts(item) -> dict[str, Any]:
         "metadata": item.metadata,
         "reason": getattr(item, "reason", ""),
         "provenance": getattr(item, "provenance", ""),
+        "summary": getattr(item, "summary", ""),
     }
 
 
@@ -91,6 +92,7 @@ def _execute_memory_recall(home: Path, args: dict[str, Any], query: str) -> Tool
         goal=goal,
         allowed_scopes=allowed_scopes,
     )
+    recall_trace = store.last_recall_trace or {}
     return ToolResult(
         tool="memory.recall",
         ok=True,
@@ -106,7 +108,13 @@ def _execute_memory_recall(home: Path, args: dict[str, Any], query: str) -> Tool
                 limit=limit,
                 goal=goal,
                 allowed_scopes=allowed_scopes,
+                recalls=recalls,
             ),
+            "recall_trace": {
+                "policy": recall_trace.get("policy", "memory_recall_trace_v1"),
+                "stages": recall_trace.get("stages", []),
+                "duration_ms": recall_trace.get("duration_ms"),
+            },
         },
     )
 

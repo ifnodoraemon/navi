@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -104,6 +105,7 @@ class MetricsProjector:
         integrity = self._integrity_metrics(current_time)
         pipeline = self._pipeline_metrics(current_time)
         delivery = self._delivery_metrics(cutoff, current_time)
+        recall = self._recall_metrics(cutoff)
         metrics = (
             MetricFact(
                 "task_success_rate",
@@ -160,6 +162,22 @@ class MetricsProjector:
                 pipeline["memory_jobs"],
                 0,
                 "memory.db",
+            ),
+            MetricFact(
+                "memory_recall_count",
+                float(recall["count"]),
+                "count",
+                recall["count"],
+                window_seconds,
+                "traces.db",
+            ),
+            MetricFact(
+                "memory_recall_p95_ms",
+                recall["p95_ms"],
+                "ms",
+                recall["count"],
+                window_seconds,
+                "traces.db",
             ),
             MetricFact(
                 "proactive_delivery_success_rate",
@@ -337,6 +355,33 @@ class MetricsProjector:
             "failed": failed,
             "failure_rate": _safe_ratio(failed, evaluated),
         }
+
+    def _recall_metrics(self, cutoff: float) -> dict[str, Any]:
+        """Recall volume/latency derived from memory.recall trace events."""
+        with connect(self.paths.traces) as conn:
+            rows = conn.execute(
+                """
+                SELECT output_json FROM trace_events
+                WHERE phase = 'memory.recall' AND created_at >= ?
+                """,
+                (cutoff,),
+            ).fetchall()
+        durations: list[float] = []
+        for (output_json,) in rows:
+            try:
+                facts = json.loads(output_json or "{}").get("facts") or {}
+            except ValueError:
+                facts = {}
+            trace = facts.get("recall_trace") or {}
+            duration = trace.get("duration_ms")
+            if isinstance(duration, (int, float)):
+                durations.append(float(duration))
+        p95_ms = 0.0
+        if durations:
+            ordered = sorted(durations)
+            index = max(0, min(len(ordered) - 1, int(round(0.95 * len(ordered))) - 1))
+            p95_ms = ordered[index]
+        return {"count": len(rows), "p95_ms": p95_ms}
 
     def _integrity_metrics(self, now: float) -> dict[str, Any]:
         with connect(self.paths.runs) as conn:

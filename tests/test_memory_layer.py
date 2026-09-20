@@ -5,14 +5,15 @@ All tests maintain zero else/elif/ternary invariants.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import time
-from dataclasses import dataclass, replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from navi.memory.models import MemoryItem
+from navi.memory.store import MemoryStore
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -26,8 +27,6 @@ def _make_memory_item(
     confidence: float = 0.70,
     metadata: dict | None = None,
 ) -> "MemoryItem":
-    from navi.memory.models import MemoryItem
-
     now = time.time()
     return MemoryItem(
         id=item_id,
@@ -48,8 +47,6 @@ def _make_memory_item(
 
 
 def _make_memory_store(tmp_path: Path, registry=None) -> "MemoryStore":
-    from navi.memory.store import MemoryStore
-
     home = tmp_path / "navi_test"
     home.mkdir(parents=True, exist_ok=True)
     return MemoryStore(home, registry=registry)
@@ -147,7 +144,7 @@ async def test_audit_semantic_conflicts_discovers_contradiction(tmp_path: Path) 
     store = _make_memory_store(tmp_path)
 
     # Add two contradicting items
-    item_a = store.add_item(
+    store.add_item(
         memory_type="fact",
         content="User prefers light theme for all applications",
         source="test",
@@ -156,7 +153,7 @@ async def test_audit_semantic_conflicts_discovers_contradiction(tmp_path: Path) 
         provenance="test",
         confidence=0.8,
     )
-    item_b = store.add_item(
+    store.add_item(
         memory_type="fact",
         content="User prefers dark theme for all applications",
         source="test",
@@ -477,3 +474,221 @@ def test_set_parameter_works_without_registry(tmp_path: Path) -> None:
     store.set_parameter("decay_base_delta", 0.10, reason="test")
     value = store.get_parameter("decay_base_delta")
     assert value == 0.10
+
+
+def test_memory_items_summary_column_migration(tmp_path: Path) -> None:
+    """A pre-summary (14-column) memory_items table migrates in place."""
+    import sqlite3
+    from contextlib import closing
+
+    from navi.paths import db_paths
+
+    home = tmp_path / "home"
+    home.mkdir()
+    db_path = db_paths(home).memory
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE memory_items (
+                id TEXT PRIMARY KEY,
+                type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                content TEXT NOT NULL,
+                source TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                last_verified_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                metadata TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                provenance TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO memory_items(
+                id, type, status, scope, content, source, confidence,
+                created_at, updated_at, last_verified_at, expires_at,
+                metadata, reason, provenance
+            )
+            VALUES (
+                'legacy-item', 'fact', 'active', 'global', 'legacy content',
+                'test', 0.8, 1.0, 1.0, 0.0, 0.0, '{}', 'r', 'p'
+            )
+            """
+        )
+        conn.commit()
+
+    store = MemoryStore(home)
+    item = store.get_item("legacy-item")
+    assert item is not None
+    assert item.content == "legacy content"
+    assert item.summary == ""
+
+
+def test_add_item_generates_l0_summary_for_long_content(tmp_path: Path) -> None:
+    store = _make_memory_store(tmp_path)
+    long_content = (
+        "用户正在系统学习 Kubernetes 的核心概念。第一周覆盖了 node、namespace、pod、"
+        "deployment、service、ingress 与 kubectl context 的基本用法。第二周计划进入"
+        "存储卷、configmap、secret 以及 helm 包管理。用户偏好通俗讲解并要求中英文"
+        "术语对照,每次讲解后会用复述的方式确认理解。"
+    ) * 2
+    item = store.add_item(
+        memory_type="fact",
+        content=long_content,
+        source="test",
+        scope="global",
+        reason="test",
+        provenance="test",
+    )
+    assert item.summary
+    assert len(item.summary) <= 256
+
+    short = store.add_item(
+        memory_type="fact",
+        content="用户偏好深色主题",
+        source="test",
+        scope="global",
+        reason="test",
+        provenance="test",
+    )
+    assert short.summary == ""
+
+    explicit = store.add_item(
+        memory_type="fact",
+        content=long_content,
+        source="test",
+        scope="global",
+        reason="test",
+        provenance="test",
+        summary="K8s 学习进度与偏好",
+    )
+    assert explicit.summary == "K8s 学习进度与偏好"
+
+    reread = store.get_item(item.id)
+    assert reread is not None
+    assert reread.summary == item.summary
+
+
+def test_render_context_prefers_summary_over_raw_content(tmp_path: Path) -> None:
+    store = _make_memory_store(tmp_path)
+    long_content = "首先讲了 pod 的基本模型。" * 80
+    item = store.add_item(
+        memory_type="fact",
+        content=long_content,
+        source="test",
+        scope="global",
+        status="active",
+        reason="test",
+        provenance="test",
+    )
+    assert item.summary
+    rendered = store.render_context("pod 的基本模型", limit=5)
+    assert item.summary in rendered
+    assert rendered.count("pod") <= len(item.summary) + rendered.count("pod 的基本模型") * 0 + 3
+
+
+def test_recall_decision_trace_records_stages(tmp_path: Path) -> None:
+    store = _make_memory_store(tmp_path)
+    item = store.add_item(
+        memory_type="fact",
+        content="用户偏好深色主题与等宽字体",
+        source="test",
+        scope="global",
+        status="active",
+        reason="test",
+        provenance="test",
+    )
+    store.recall("深色主题", limit=5)
+    trace = store.last_recall_trace
+    assert trace is not None
+    assert trace["policy"] == "memory_recall_trace_v1"
+    assert trace["duration_ms"] >= 0.0
+    stage_names = [stage["stage"] for stage in trace["stages"]]
+    assert stage_names == ["fts", "lexical", "graph", "select"]
+    select_stage = trace["stages"][-1]
+    assert select_stage["selected"]
+    assert select_stage["selected"][0]["id"] == item.id
+
+
+@pytest.mark.asyncio
+async def test_case_precipitation_job_creates_case_memory(tmp_path: Path) -> None:
+    from navi.goals import GoalStore
+
+    home = tmp_path / "navi_case"
+    home.mkdir(parents=True, exist_ok=True)
+    goal = GoalStore(home).create(
+        objective="优化简历以匹配 Agent Infra 岗位",
+        workspace=str(tmp_path),
+        source="weixin",
+        peer_id="peer-1",
+        sender_id="user-1",
+    )
+    store = MemoryStore(home)
+    job_id = store.enqueue_case_precipitation(
+        goal_id=goal.id,
+        source="goal_convergence",
+        peer_id="peer-1",
+        sender_id="user-1",
+    )
+    again = store.enqueue_case_precipitation(
+        goal_id=goal.id,
+        source="goal_convergence",
+        peer_id="peer-1",
+        sender_id="user-1",
+    )
+    assert job_id == again
+
+    claimed = store.claim_consolidation_jobs(owner="case-test", limit=5)
+    assert len(claimed) == 1
+    assert claimed[0].source == "goal_convergence"
+
+    provider = _mock_provider_with_response(
+        {
+            "content": "目标:优化简历匹配 Agent Infra 岗位。做法:先定位简历文件缺口,按 JD 逐条改写项目经历,突出推理服务与 K8s 经验。结果:用户未提供原简历,产出渠道建议。复用条件:需要用户提供简历原文后再执行逐条优化。",
+            "confidence": 0.7,
+            "reason": "求职线长程任务,经验可复用",
+        }
+    )
+    runtime = MagicMock()
+    runtime.provider = provider
+
+    items = await store.consolidate_job(claimed[0], runtime)
+
+    assert len(items) == 1
+    case = items[0]
+    assert case.type == "case"
+    assert case.status == "proposed"
+    assert case.provenance == f"case-job:{claimed[0].id}:goal:{goal.id}"
+    assert "简历" in case.content
+    listed = store.list_items(memory_type="case")
+    assert [item.id for item in listed] == [case.id]
+
+    recalled = store.recall("简历 优化", limit=5)
+    assert any(r.item.id == case.id for r in recalled)
+
+
+@pytest.mark.asyncio
+async def test_case_precipitation_skips_when_goal_missing(tmp_path: Path) -> None:
+    home = tmp_path / "navi_case_missing"
+    home.mkdir(parents=True, exist_ok=True)
+    store = MemoryStore(home)
+    store.enqueue_case_precipitation(
+        goal_id="ghost-goal",
+        source="goal_convergence",
+        peer_id="",
+        sender_id="",
+    )
+    claimed = store.claim_consolidation_jobs(owner="case-test-2", limit=5)
+    assert len(claimed) == 1
+
+    runtime = MagicMock()
+    runtime.provider = AsyncMock()
+
+    items = await store.consolidate_job(claimed[0], runtime)
+    assert items == []
+    runtime.provider.complete_for.assert_not_called()

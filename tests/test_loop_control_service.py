@@ -772,3 +772,50 @@ def test_goal_task_status_tracks_terminal_run_state(tmp_path):
 
     assert completed_goal is not None
     assert completed_goal.task_status == "done"
+
+
+def test_converged_result_enqueues_case_precipitation(tmp_path):
+    from navi.db import connect
+    from navi.paths import db_paths
+
+    service = LoopControlService(tmp_path)
+    opened = service.open_goal(
+        OpenGoalRequest(
+            objective="summarize the weekly report",
+            workspace=str(tmp_path),
+            allowed_capabilities=("respond",),
+            auto_start=False,
+        )
+    )
+    terminal = replace(
+        opened.loop_run,
+        terminal_state=LoopTerminalState.CONVERGED,
+    )
+
+    service.apply_state_graph_result(
+        opened,
+        StateGraphRunResult(run_state=terminal, evidence={}),
+    )
+
+    session_key = f"case_precipitation:{opened.goal.id}"
+    with connect(db_paths(tmp_path).memory) as conn:
+        rows = conn.execute(
+            "SELECT source, status FROM memory_consolidation_jobs WHERE session_id = ?",
+            (session_key,),
+        ).fetchall()
+    assert rows == [("goal_convergence", "pending")]
+
+    # Saga replay / repeated convergence must not double-enqueue.
+    service.apply_state_graph_result(
+        opened,
+        StateGraphRunResult(
+            run_state=replace(terminal, version=terminal.version + 1),
+            evidence={},
+        ),
+    )
+    with connect(db_paths(tmp_path).memory) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM memory_consolidation_jobs WHERE session_id = ?",
+            (session_key,),
+        ).fetchone()[0]
+    assert count == 1

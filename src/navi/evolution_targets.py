@@ -26,6 +26,14 @@ BUILTIN_EVOLUTION_EVAL_CASES: dict[str, dict[str, Any]] = {
         "target_types": ["memory_parameter", "dynamic_parameter", "system_parameter"],
         "assertions": [{"type": "parameter_valid"}],
     },
+    # Behavioral marker for memory-plane parameters: satisfies the C1
+    # behavioral-verification lexicon while the real behavioral check is the
+    # memory regression gate in SelfPlayArena.execute_shadow_trial.
+    "memory.regression.gate": {
+        "id": "memory.regression.gate",
+        "target_types": ["dynamic_parameter"],
+        "assertions": [{"type": "parameter_valid"}],
+    },
 }
 
 

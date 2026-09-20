@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 from .paths import db_paths
 
 if TYPE_CHECKING:
-    from .memory.provider import SQLiteMemoryProvider
+    pass
 
 SYSTEM_DYNAMIC_PARAMETERS: dict[str, float] = {
     # Cognitive and Memory weights
@@ -45,6 +45,8 @@ SYSTEM_DYNAMIC_PARAMETERS: dict[str, float] = {
     "context_memory_recall_base_score": 800.0,
     "consolidation_idle_seconds": 30.0,
     "memory_llm_rerank_threshold": 0.50,
+    "memory_render_context_max_chars": 256.0,
+    "memory_regression_gate_threshold": 0.85,
     "memory_conflict_similarity_threshold": 0.35,
 
     # Transport and network retry parameters

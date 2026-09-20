@@ -58,6 +58,7 @@ class TracePhase(StrEnum):
     PLANNER_CALL_START = "planner.call.start"
     PLANNER_PARSE_ERROR = "planner.parse_error"
     PLANNER_SYSCALL = "planner.syscall"
+    MEMORY_RECALL = "memory.recall"
     RUNTIME_CONVERGED = "runtime.converged"
     TURN_FINAL = "turn.final"
     TURN_START = "turn.start"

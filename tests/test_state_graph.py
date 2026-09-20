@@ -1541,3 +1541,71 @@ def test_execution_command_keeps_navi_home_paths_out_of_shadow(tmp_path) -> None
     assert f"{logical}/.navi/weixin/media/inbound/resume.pdf" in translated
     assert f"{shadow}/.navi/" not in translated
     assert f"{shadow}/notes.txt" in translated
+
+
+@pytest.mark.asyncio
+async def test_state_graph_traces_planner_memory_recall(tmp_path: Path) -> None:
+    provider = _TraceUsagePlanningProvider()
+    runtime = AgentRuntime(home=tmp_path, provider=provider)
+    runtime.memory.add_item(
+        memory_type="fact",
+        content="planner recall trace fixture item",
+        source="test",
+        scope="global",
+        status="active",
+        reason="test",
+        provenance="test",
+    )
+    planner_capabilities = CapabilityRegistry(
+        home=tmp_path,
+        project_dir=tmp_path,
+        permission_ceiling="write",
+    )
+    context = CapabilityContext(
+        home=tmp_path,
+        source="state_graph",
+        peer_id="state_graph",
+        sender_id="tester",
+        permission_ceiling="write",
+        workspace=str(tmp_path),
+        trace_id="trace-planner-memory-recall",
+    )
+    trace_store = TraceStore(tmp_path)
+
+    planner_port = ModelCapabilityPlannerPort(
+        runtime=runtime,
+        capabilities=planner_capabilities,
+    )
+    planner_port = TracingPlannerPortProxy(planner_port, trace_store, context)
+
+    runner = DurableStateGraphRunner(
+        home=tmp_path,
+        planner_port=planner_port,
+        executor_port=CapabilityExecutorPort(
+            home=tmp_path,
+            context=context,
+            sensitive_approval_mode="skip",
+        ),
+        trace_store=trace_store,
+        trace_context=context,
+    )
+
+    result = await runner.run_async(
+        _write_spec(_command("from pathlib import Path; assert Path('app.py').exists()")),
+        workspace=tmp_path,
+    )
+
+    events = trace_store.list_events("trace-planner-memory-recall")
+    recall_events = [event for event in events if event.phase == str(TracePhase.MEMORY_RECALL)]
+    assert result.terminal_state == LoopTerminalState.CONVERGED
+    assert recall_events
+    payload = json.loads(recall_events[0].output_json)
+    facts = payload["facts"]
+    assert facts["policy"] == "memory_recall_trace_v1"
+    stages = facts["recall_trace"]["stages"]
+    stage_names = [stage["stage"] for stage in stages]
+    assert "fts" in stage_names
+    assert "lexical" in stage_names
+    assert "select" in stage_names
+    assert facts["recall_trace"]["duration_ms"] is not None
+    assert recall_events[0].ok is True
