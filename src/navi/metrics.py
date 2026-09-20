@@ -73,6 +73,16 @@ class SystemMetricsSnapshot:
         }
 
 
+
+def _json_dict(payload: str | None) -> dict[str, Any]:
+    try:
+        parsed = json.loads(payload or "{}")
+    except ValueError:
+        return {}
+    if isinstance(parsed, dict):
+        return dict(parsed)
+    return {}
+
 class MetricsProjector:
     """Stateless projection of durable runtime facts into metrics and SLOs.
 
@@ -176,6 +186,22 @@ class MetricsProjector:
                 recall["p95_ms"],
                 "ms",
                 recall["count"],
+                window_seconds,
+                "traces.db",
+            ),
+            MetricFact(
+                "memory_recall_fts_zero_hit_rate",
+                recall["fts_zero_hit_rate"],
+                "ratio",
+                recall["count"],
+                window_seconds,
+                "traces.db",
+            ),
+            MetricFact(
+                "memory_activation_rate",
+                recall["activation_rate"],
+                "ratio",
+                recall["activation_requested"],
                 window_seconds,
                 "traces.db",
             ),
@@ -357,7 +383,12 @@ class MetricsProjector:
         }
 
     def _recall_metrics(self, cutoff: float) -> dict[str, Any]:
-        """Recall volume/latency derived from memory.recall trace events."""
+        """Recall volume/latency, FTS zero-hit rate, and activation utilization.
+
+        All three are pure projections over trace events (no second source of
+        truth): memory.recall events carry the decision trace; planner.syscall
+        events carry the memory_activation requested/activated ids.
+        """
         with connect(self.paths.traces) as conn:
             rows = conn.execute(
                 """
@@ -366,22 +397,47 @@ class MetricsProjector:
                 """,
                 (cutoff,),
             ).fetchall()
+            syscall_rows = conn.execute(
+                """
+                SELECT output_json FROM trace_events
+                WHERE phase = 'planner.syscall' AND created_at >= ?
+                """,
+                (cutoff,),
+            ).fetchall()
         durations: list[float] = []
+        zero_fts_hits = 0
         for (output_json,) in rows:
-            try:
-                facts = json.loads(output_json or "{}").get("facts") or {}
-            except ValueError:
-                facts = {}
+            facts = _json_dict(output_json).get("facts") or {}
             trace = facts.get("recall_trace") or {}
             duration = trace.get("duration_ms")
             if isinstance(duration, (int, float)):
                 durations.append(float(duration))
+            fts_stage = None
+            for stage in trace.get("stages") or []:
+                if dict(stage).get("stage") == "fts":
+                    fts_stage = dict(stage)
+            if fts_stage is not None and not fts_stage.get("hit_count"):
+                zero_fts_hits += 1
+        requested_total = 0
+        activated_total = 0
+        for (output_json,) in syscall_rows:
+            activation = _json_dict(output_json).get("memory_activation") or {}
+            requested_ids = activation.get("requested_ids") or []
+            if requested_ids:
+                requested_total += len(requested_ids)
+                activated_total += int(activation.get("activated_count") or 0)
         p95_ms = 0.0
         if durations:
             ordered = sorted(durations)
             index = max(0, min(len(ordered) - 1, int(round(0.95 * len(ordered))) - 1))
             p95_ms = ordered[index]
-        return {"count": len(rows), "p95_ms": p95_ms}
+        return {
+            "count": len(rows),
+            "p95_ms": p95_ms,
+            "fts_zero_hit_rate": _safe_ratio(zero_fts_hits, len(rows)),
+            "activation_rate": _safe_ratio(activated_total, requested_total),
+            "activation_requested": requested_total,
+        }
 
     def _integrity_metrics(self, now: float) -> dict[str, Any]:
         with connect(self.paths.runs) as conn:

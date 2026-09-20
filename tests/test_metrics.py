@@ -263,3 +263,66 @@ async def test_system_metrics_capability_returns_content_free_snapshot(tmp_path:
     assert result.facts["entity_type"] == "system_metrics"
     assert result.facts["overall_status"] == "insufficient_data"
     assert all("content" not in metric for metric in result.facts["metrics"])
+
+
+def test_metrics_derive_recall_observability_from_trace_events(tmp_path: Path) -> None:
+    trace_store = TraceStore(tmp_path)
+
+    def _recall_event(trace_id: str, duration_ms: float, fts_hits: int) -> None:
+        trace_store.add_event(
+            trace_id=trace_id,
+            session_id="metrics-test",
+            run_id="run-a",
+            phase="memory.recall",
+            tool="memory.recall",
+            ok=True,
+            input_data={"query": "指标测试", "limit": 5},
+            output_data={
+                "facts": {
+                    "policy": "memory_recall_trace_v1",
+                    "recall_trace": {
+                        "stages": [
+                            {"stage": "fts", "hit_count": fts_hits, "hit_ids": []},
+                            {
+                                "stage": "select",
+                                "selected": [],
+                                "eligible_cut": 0,
+                            },
+                        ],
+                        "duration_ms": duration_ms,
+                    },
+                }
+            },
+        )
+
+    _recall_event("t1", 10.0, 3)
+    _recall_event("t2", 20.0, 0)
+    _recall_event("t3", 30.0, 0)
+    trace_store.add_event(
+        trace_id="t1",
+        session_id="metrics-test",
+        run_id="run-a",
+        phase="planner.syscall",
+        model_role="planner",
+        tool="file.write",
+        ok=True,
+        input_data={},
+        output_data={
+            "tool": "file.write",
+            "memory_activation": {
+                "requested_ids": ["m1", "m2", "m3", "m4"],
+                "activated_ids": ["m1", "m2"],
+                "activated_count": 2,
+                "missing_count": 2,
+            },
+        },
+    )
+
+    snapshot = MetricsProjector(tmp_path).snapshot()
+    metrics = {item.name: item for item in snapshot.metrics}
+
+    assert metrics["memory_recall_count"].value == 3.0
+    assert metrics["memory_recall_p95_ms"].value == 30.0
+    assert metrics["memory_recall_fts_zero_hit_rate"].value == pytest.approx(2 / 3)
+    assert metrics["memory_activation_rate"].value == pytest.approx(0.5)
+    assert metrics["memory_activation_rate"].samples == 4

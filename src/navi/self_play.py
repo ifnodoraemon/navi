@@ -306,8 +306,7 @@ class SelfPlayArena:
 
         ordered_targets: list[str] = sorted(
             all_dynamic_params,
-            key=lambda k: param_attribution_counts.get(k, 0),
-            reverse=True,
+            key=lambda k: (-param_attribution_counts.get(k, 0), k),
         )
 
         specs: list[ShadowTrialSpec] = []

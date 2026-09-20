@@ -124,6 +124,17 @@ def test_execute_shadow_trial_without_promotion(tmp_path: Path) -> None:
     assert unchanged_jaccard == initial_jaccard
 
 
+def _assert_gated_promotion_result(res) -> None:
+    assert res.promoted
+    assert res.evidence["memory_gate"]["blocked"] is False
+    assert res.score_delta > 0.0
+
+
+def _assert_stub_observation_result(res) -> None:
+    assert not res.promoted
+    assert res.score_delta == 0.0
+
+
 def test_run_autonomous_cycle(tmp_path: Path) -> None:
     arena = SelfPlayArena(tmp_path)
     results = arena.run_autonomous_cycle(max_trials=3, auto_promote=True)
@@ -131,13 +142,21 @@ def test_run_autonomous_cycle(tmp_path: Path) -> None:
     assert len(results) <= 3
     for res in results:
         assert res.passed
-        # Default cycle uses runtime stub verification only: trials run as
-        # shadow observations and never mutate live state.
-        assert not res.promoted
-        assert res.score_delta == 0.0
+        # Memory-plane parameters carry the behavioral regression gate and
+        # may promote; everything else runs as a structural-stub shadow
+        # observation and must never mutate live state.
+        has_gate = bool(res.evidence.get("memory_gate"))
+        result_checks = {
+            True: _assert_gated_promotion_result,
+            False: _assert_stub_observation_result,
+        }
+        result_checks[has_gate](res)
 
     promoted_trials = arena.list_trials(promoted_only=True)
-    assert len(promoted_trials) == 0
+    gated_promotions = [
+        res for res in results if res.evidence.get("memory_gate")
+    ]
+    assert len(promoted_trials) == len(gated_promotions)
 
 
 def test_generate_and_execute_prompt_perturbation(tmp_path: Path) -> None:
